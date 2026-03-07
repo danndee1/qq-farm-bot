@@ -12,11 +12,13 @@ import { menuRoutes } from '@/router/menu'
 import { getPlatformClass, getPlatformLabel, useAccountStore } from '@/stores/account'
 import { useAppStore } from '@/stores/app'
 import { useStatusStore } from '@/stores/status'
+import { useToastStore } from '@/stores/toast'
 import { useUserStore } from '@/stores/user'
 
 const accountStore = useAccountStore()
 const statusStore = useStatusStore()
 const appStore = useAppStore()
+const toastStore = useToastStore()
 const userStore = useUserStore()
 const route = useRoute()
 const router = useRouter()
@@ -257,12 +259,17 @@ async function handleRenew() {
   try {
     const result = await userStore.renew(renewCardCode.value)
     if (result.ok) {
+      toastStore.success(result.message || '续费成功')
       showRenewModal.value = false
       renewCardCode.value = ''
     }
+    else {
+      toastStore.error(result.error || '续费失败')
+    }
   }
   catch (e: any) {
-    console.error('续费失败:', e)
+    const errorMsg = e.response?.data?.error || e.message || '续费失败'
+    toastStore.error(errorMsg)
   }
 }
 </script>

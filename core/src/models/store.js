@@ -26,27 +26,23 @@ const DEFAULT_OFFLINE_REMINDER = {
 // ============ 全局配置 ============
 const DEFAULT_ACCOUNT_CONFIG = {
     automation: {
-        farm: true,
-        farm_push: true,   // 收到 LandsNotify 推送时是否立即触发巡田
-        land_upgrade: true, // 是否自动升级土地
-        friend: true,       // 好友互动总开关
-        friend_help_exp_limit: true, // 帮忙经验达上限后自动停止帮忙
-        friend_steal: true, // 偷菜
-        friend_help: true,  // 帮忙
-        friend_bad: false,  // 捣乱(放虫草)
-        task: true,
-        // 以下功能默认启用，不再提供开关
-        // email: true,
-        // free_gifts: true,
-        // share_reward: true,
-        // vip_gift: true,
-        // month_card: true,
-        // open_server_gift: true,
+        farm: false,
+        farm_push: false,
+        land_upgrade: false,
+        friend: false,
+        friend_help_exp_limit: false,
+        friend_steal: false,
+        friend_help: false,
+        friend_bad: false,
+        task: false,
+        task_plant: false,
         fertilizer_gift: false,
         fertilizer_buy: false,
-        sell: true,
+        sell: false,
         fertilizer: 'none',
-        skip_own_weed_bug: false,  // 不除自己草虫
+        fertilizerBuyType: 'organic',
+        fertilizeLandLevel: 1,
+        skip_own_weed_bug: false,
     },
     plantingStrategy: 'preferred',
     preferredSeedId: 0,
@@ -106,6 +102,14 @@ const globalConfig = {
     },
     cardRegisterDefault: {
         quota: 3,
+    },
+    // 管理员微信配置设置
+    adminWxConfig: {
+        showWxConfigTab: true,
+        showWxLoginTab: true,
+        apiBase: 'http://127.0.0.1:8059/api',
+        apiKey: '',
+        proxyApiUrl: 'https://api.aineishe.com/api/wxnc',
     },
 };
 
@@ -195,8 +199,14 @@ function normalizeAccountConfig(input, fallback = accountFallbackConfig) {
         for (const [k, v] of Object.entries(src.automation)) {
             if (!ALLOWED_AUTOMATION_KEYS.has(k)) continue;
             if (k === 'fertilizer') {
-                const allowed = ['both', 'normal', 'organic', 'none'];
+                const allowed = ['both', 'normal', 'organic', 'none', 'smart'];
                 cfg.automation[k] = allowed.includes(v) ? v : cfg.automation[k];
+            } else if (k === 'fertilizerBuyType') {
+                const allowed = ['normal', 'organic'];
+                cfg.automation[k] = allowed.includes(v) ? v : cfg.automation[k];
+            } else if (k === 'fertilizeLandLevel') {
+                const allowed = [1, 2, 3, 4];
+                cfg.automation[k] = allowed.includes(Number(v)) ? Number(v) : cfg.automation[k];
             } else {
                 cfg.automation[k] = !!v;
             }
@@ -378,6 +388,16 @@ function loadGlobalConfig() {
                     quota: Number.isFinite(quota) && quota >= 0 ? quota : 3,
                 };
             }
+
+            if (data.adminWxConfig && typeof data.adminWxConfig === 'object') {
+                globalConfig.adminWxConfig = {
+                    showWxConfigTab: data.adminWxConfig.showWxConfigTab !== false,
+                    showWxLoginTab: data.adminWxConfig.showWxLoginTab !== false,
+                    apiBase: String(data.adminWxConfig.apiBase || 'http://127.0.0.1:8059/api').trim(),
+                    apiKey: String(data.adminWxConfig.apiKey || '').trim(),
+                    proxyApiUrl: String(data.adminWxConfig.proxyApiUrl || 'https://api.aineishe.com/api/wxnc').trim(),
+                };
+            }
         }
     } catch (e) {
         console.error('加载配置失败:', e.message);
@@ -478,8 +498,14 @@ function applyConfigSnapshot(snapshot, options = {}) {
         for (const [k, v] of Object.entries(cfg.automation)) {
             if (next.automation[k] === undefined) continue;
             if (k === 'fertilizer') {
-                const allowed = ['both', 'normal', 'organic', 'none'];
+                const allowed = ['both', 'normal', 'organic', 'none', 'smart'];
                 next.automation[k] = allowed.includes(v) ? v : next.automation[k];
+            } else if (k === 'fertilizerBuyType') {
+                const allowed = ['normal', 'organic'];
+                next.automation[k] = allowed.includes(v) ? v : next.automation[k];
+            } else if (k === 'fertilizeLandLevel') {
+                const allowed = [1, 2, 3, 4];
+                next.automation[k] = allowed.includes(Number(v)) ? Number(v) : next.automation[k];
             } else {
                 next.automation[k] = !!v;
             }
@@ -852,6 +878,37 @@ function setCardRegisterDefault(cfg) {
     return getCardRegisterDefault();
 }
 
+function getFertilizerBuyType(accountId) {
+    const cfg = getAccountConfigSnapshot(accountId);
+    const val = cfg && cfg.automation && cfg.automation.fertilizerBuyType;
+    return val === 'normal' ? 'normal' : 'organic';
+}
+
+function getFertilizeLandLevel(accountId) {
+    const cfg = getAccountConfigSnapshot(accountId);
+    const val = cfg && cfg.automation && cfg.automation.fertilizeLandLevel;
+    const allowed = [1, 2, 3, 4];
+    return allowed.includes(Number(val)) ? Number(val) : 1;
+}
+
+function getAdminWxConfig() {
+    return { ...globalConfig.adminWxConfig };
+}
+
+function setAdminWxConfig(cfg) {
+    if (cfg && typeof cfg === 'object') {
+        globalConfig.adminWxConfig = {
+            showWxConfigTab: cfg.showWxConfigTab !== false,
+            showWxLoginTab: cfg.showWxLoginTab !== false,
+            apiBase: String(cfg.apiBase || 'http://127.0.0.1:8059/api').trim(),
+            apiKey: String(cfg.apiKey || '').trim(),
+            proxyApiUrl: String(cfg.proxyApiUrl || 'https://api.aineishe.com/api/wxnc').trim(),
+        };
+        saveGlobalConfig();
+    }
+    return getAdminWxConfig();
+}
+
 module.exports = {
     getConfigSnapshot,
     applyConfigSnapshot,
@@ -893,4 +950,10 @@ module.exports = {
     // 卡密注册默认配置
     getCardRegisterDefault,
     setCardRegisterDefault,
+    // 化肥相关配置
+    getFertilizerBuyType,
+    getFertilizeLandLevel,
+    // 管理员微信配置
+    getAdminWxConfig,
+    setAdminWxConfig,
 };

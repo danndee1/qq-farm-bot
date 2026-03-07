@@ -25,6 +25,7 @@ const saving = ref(false)
 const passwordSaving = ref(false)
 const offlineSaving = ref(false)
 const offlineTesting = ref(false)
+const adminWxSaving = ref(false)
 
 const modalVisible = ref(false)
 const modalConfig = ref({
@@ -71,9 +72,42 @@ const localSettings = ref({
     fertilizer_gift: false,
     fertilizer_buy: false,
     fertilizer: 'none',
+    fertilizerBuyType: 'organic',
+    fertilizeLandLevel: 1,
     skip_own_weed_bug: false,
   },
 })
+
+const automationMasterSwitch = ref(false)
+
+const automationBooleanKeys = [
+  'farm',
+  'task',
+  'sell',
+  'friend',
+  'farm_push',
+  'land_upgrade',
+  'friend_steal',
+  'friend_help',
+  'friend_bad',
+  'friend_help_exp_limit',
+  'fertilizer_gift',
+  'fertilizer_buy',
+  'skip_own_weed_bug',
+] as const
+
+watch(automationMasterSwitch, (newVal) => {
+  for (const key of automationBooleanKeys) {
+    localSettings.value.automation[key] = newVal
+  }
+})
+
+watch(
+  () => automationBooleanKeys.map(key => localSettings.value.automation[key]),
+  (vals) => {
+    automationMasterSwitch.value = vals.every(v => v === true)
+  },
+)
 
 const localOffline = ref({
   channel: 'webhook',
@@ -82,6 +116,14 @@ const localOffline = ref({
   token: '',
   title: '',
   msg: '',
+})
+
+const localAdminWxConfig = ref({
+  showWxConfigTab: true,
+  showWxLoginTab: true,
+  apiBase: 'http://127.0.0.1:8059/api',
+  apiKey: '',
+  proxyApiUrl: 'https://api.aineishe.com/api/wxnc',
 })
 
 const passwordForm = ref({
@@ -118,6 +160,8 @@ function syncLocalSettings() {
         fertilizer_gift: false,
         fertilizer_buy: false,
         fertilizer: 'none',
+        fertilizerBuyType: 'organic',
+        fertilizeLandLevel: 1,
         skip_own_weed_bug: false,
       }
     }
@@ -136,6 +180,8 @@ function syncLocalSettings() {
         fertilizer_gift: false,
         fertilizer_buy: false,
         fertilizer: 'none',
+        fertilizerBuyType: 'organic',
+        fertilizeLandLevel: 1,
         skip_own_weed_bug: false,
       }
       localSettings.value.automation = {
@@ -143,6 +189,10 @@ function syncLocalSettings() {
         ...localSettings.value.automation,
       }
     }
+
+    automationMasterSwitch.value = automationBooleanKeys.every(
+      key => localSettings.value.automation[key] === true,
+    )
 
     if (settings.value.offlineReminder) {
       localOffline.value = JSON.parse(JSON.stringify(settings.value.offlineReminder))
@@ -155,6 +205,41 @@ async function loadData() {
     await settingStore.fetchSettings(currentAccountId.value)
     syncLocalSettings()
     await farmStore.fetchSeeds(currentAccountId.value)
+  }
+  if (userStore.isAdmin) {
+    await loadAdminWxConfig()
+  }
+}
+
+async function loadAdminWxConfig() {
+  try {
+    const { data } = await api.get('/api/admin/wx-config')
+    if (data?.ok && data?.data) {
+      localAdminWxConfig.value = { ...localAdminWxConfig.value, ...data.data }
+    }
+  }
+  catch (e) {
+    console.error('加载管理员微信配置失败:', e)
+  }
+}
+
+async function handleSaveAdminWxConfig() {
+  adminWxSaving.value = true
+  try {
+    const { data } = await api.post('/api/admin/wx-config', localAdminWxConfig.value)
+    if (data?.ok) {
+      showAlert('管理设置已保存')
+    }
+    else {
+      showAlert(`保存失败: ${data?.error || '未知错误'}`, 'danger')
+    }
+  }
+  catch (e: any) {
+    const msg = e?.response?.data?.error || e?.message || '请求失败'
+    showAlert(`保存失败: ${msg}`, 'danger')
+  }
+  finally {
+    adminWxSaving.value = false
   }
 }
 
@@ -172,6 +257,18 @@ const fertilizerOptions = [
   { label: '仅普通化肥', value: 'normal' },
   { label: '仅有机化肥', value: 'organic' },
   { label: '不施肥', value: 'none' },
+]
+
+const fertilizerBuyTypeOptions = [
+  { label: '有机化肥', value: 'organic' },
+  { label: '普通化肥', value: 'normal' },
+]
+
+const fertilizeLandLevelOptions = [
+  { label: '黄土地及以上', value: 1 },
+  { label: '红土地及以上', value: 2 },
+  { label: '黑土地及以上', value: 3 },
+  { label: '仅金土地', value: 4 },
 ]
 
 const plantingStrategyOptions = [
@@ -537,6 +634,11 @@ async function handleTestOffline() {
         </div>
 
         <div class="flex-1 p-4 space-y-4">
+          <div class="flex items-center gap-4 rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
+            <BaseSwitch v-model="automationMasterSwitch" label="总控开关" />
+            <span class="text-xs text-gray-500 dark:text-gray-400">开启后自动打开所有自动控制开关</span>
+          </div>
+
           <div class="grid grid-cols-2 gap-3 md:grid-cols-3">
             <BaseSwitch v-model="localSettings.automation.farm" label="自动种植收获" />
             <BaseSwitch v-model="localSettings.automation.task" label="自动做任务" />
@@ -562,6 +664,21 @@ async function handleTestOffline() {
               label="施肥策略"
               class="w-full md:w-1/2"
               :options="fertilizerOptions"
+            />
+          </div>
+
+          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <BaseSelect
+              v-model="localSettings.automation.fertilizerBuyType"
+              label="购买化肥类型"
+              class="w-full"
+              :options="fertilizerBuyTypeOptions"
+            />
+            <BaseSelect
+              v-model="localSettings.automation.fertilizeLandLevel"
+              label="施肥土地等级"
+              class="w-full"
+              :options="fertilizeLandLevelOptions"
             />
           </div>
         </div>
@@ -716,6 +833,73 @@ async function handleTestOffline() {
             @click="handleSaveOffline"
           >
             保存下线提醒设置
+          </BaseButton>
+        </div>
+      </div>
+
+      <!-- 管理设置（仅管理员可见） -->
+      <div v-if="userStore.isAdmin" class="card h-full flex flex-col rounded-lg bg-white shadow dark:bg-gray-800">
+        <div class="border-b bg-gray-50/50 px-4 py-3 dark:border-gray-700 dark:bg-gray-800/50">
+          <h3 class="flex items-center gap-2 text-base text-gray-900 font-bold dark:text-gray-100">
+            <div class="i-carbon-settings" />
+            管理设置
+          </h3>
+        </div>
+
+        <div class="flex-1 p-4 space-y-3">
+          <div class="rounded bg-blue-50 p-3 text-sm dark:bg-blue-900/20">
+            <p class="text-gray-700 dark:text-gray-300">
+              此设置仅管理员可见。关闭微信配置标签但打开微信扫码登录标签时，所有用户将使用管理员设置的微信配置。
+            </p>
+          </div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <BaseSwitch
+              v-model="localAdminWxConfig.showWxConfigTab"
+              label="显示微信配置标签"
+            />
+            <BaseSwitch
+              v-model="localAdminWxConfig.showWxLoginTab"
+              label="显示微信扫码登录标签"
+            />
+          </div>
+
+          <div class="border-t pt-3 mt-3 space-y-3 dark:border-gray-700">
+            <h4 class="text-sm text-gray-700 font-medium dark:text-gray-300">
+              微信配置（关闭微信配置标签时生效）
+            </h4>
+            <BaseInput
+              v-model="localAdminWxConfig.apiBase"
+              label="后端API地址"
+              type="text"
+              placeholder="http://127.0.0.1:8059/api"
+            />
+            <BaseInput
+              v-model="localAdminWxConfig.apiKey"
+              label="API Key（可选）"
+              type="text"
+              placeholder="第三方API密钥"
+            />
+            <BaseInput
+              v-model="localAdminWxConfig.proxyApiUrl"
+              label="第三方API地址"
+              type="text"
+              placeholder="https://api.aineishe.com/api/wxnc"
+            />
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              当前使用代理模式，请求将通过后端转发到第三方API。
+            </p>
+          </div>
+        </div>
+
+        <div class="mt-auto flex justify-end border-t bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/50">
+          <BaseButton
+            variant="primary"
+            size="sm"
+            :loading="adminWxSaving"
+            @click="handleSaveAdminWxConfig"
+          >
+            保存管理设置
           </BaseButton>
         </div>
       </div>

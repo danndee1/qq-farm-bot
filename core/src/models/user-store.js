@@ -188,6 +188,10 @@ function renewUser(username, cardCode) {
         return { ok: false, error: '卡密已被禁用' };
     }
 
+    if (card.usedBy) {
+        return { ok: false, error: '卡密已被使用' };
+    }
+
     const cardType = card.type || 'days';
     const now = Date.now();
 
@@ -232,7 +236,11 @@ function renewUser(username, cardCode) {
     user.card.code = card.code;
     user.card.description = card.description;
 
+    card.usedBy = username;
+    card.usedAt = now;
+
     saveUsers();
+    saveCards();
 
     return { ok: true, card: user.card, cardType };
 }

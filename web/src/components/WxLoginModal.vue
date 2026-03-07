@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useIntervalFn } from '@vueuse/core'
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import api from '@/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import { useAccountStore } from '@/stores/account'
@@ -17,6 +18,28 @@ const accountStore = useAccountStore()
 
 const activeTab = ref<'login' | 'settings'>('login')
 const accountName = ref('')
+
+// 管理员配置
+const adminWxConfig = ref({
+  showWxConfigTab: true,
+  showWxLoginTab: true,
+})
+
+async function loadAdminWxConfigPublic() {
+  try {
+    const { data } = await api.get('/api/wx-config/public')
+    if (data?.ok && data?.data) {
+      adminWxConfig.value = { ...adminWxConfig.value, ...data.data }
+    }
+  }
+  catch (e) {
+    console.error('加载管理员微信配置失败:', e)
+  }
+}
+
+onMounted(() => {
+  loadAdminWxConfigPublic()
+})
 
 // 轮询检查登录状态
 const { pause: stopCheck, resume: startCheck } = useIntervalFn(async () => {
@@ -150,6 +173,7 @@ watch(() => props.show, (newVal) => {
           扫码登录
         </button>
         <button
+          v-if="adminWxConfig.showWxConfigTab"
           class="flex-1 py-2 text-center text-sm font-medium transition-colors"
           :class="activeTab === 'settings' ? 'border-b-2' : 'opacity-60 hover:opacity-80'"
           :style="{

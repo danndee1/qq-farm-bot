@@ -5,7 +5,7 @@
 const protobuf = require('protobufjs');
 const { CONFIG, PlantPhase, PHASE_NAMES } = require('../config/config');
 const { getPlantNameBySeedId, getPlantName, getPlantExp, formatGrowTime, getPlantGrowTime, getAllSeeds, getPlantById, getSeedImageBySeedId } = require('../config/gameConfig');
-const { isAutomationOn, getPreferredSeed, getAutomation, getPlantingStrategy, getPlantDelaySeconds } = require('../models/store');
+const { isAutomationOn, getPreferredSeed, getAutomation, getPlantingStrategy, getPlantDelaySeconds, getFertilizeLandLevel } = require('../models/store');
 const { sendMsgAsync, getUserState, networkEvents, getWsErrorState } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toLong, toNum, getServerTimeSec, toTimeSec, log, logWarn, sleep } = require('../utils/utils');
@@ -140,10 +140,14 @@ async function fertilizeOrganicLoop(landIds) {
 function getOrganicFertilizerTargetsFromLands(lands) {
     const list = Array.isArray(lands) ? lands : [];
     const targets = [];
+    const minLandLevel = getFertilizeLandLevel();
     for (const land of list) {
         if (!land || !land.unlocked) continue;
         const landId = toNum(land.id);
         if (!landId) continue;
+
+        const landLevel = toNum(land.level);
+        if (minLandLevel > 0 && landLevel < minLandLevel) continue;
 
         const plant = land.plant;
         if (!plant || !plant.phases || plant.phases.length === 0) continue;
@@ -167,11 +171,15 @@ function getFastMatureLands(lands) {
     const targets = [];
     const nowSec = getServerTimeSec();
     const FIVE_MINUTES_SEC = 5 * 60;
+    const minLandLevel = getFertilizeLandLevel();
 
     for (const land of list) {
         if (!land || !land.unlocked) continue;
         const landId = toNum(land.id);
         if (!landId) continue;
+
+        const landLevel = toNum(land.level);
+        if (minLandLevel > 0 && landLevel < minLandLevel) continue;
 
         const plant = land.plant;
         if (!plant || !plant.phases || plant.phases.length === 0) continue;
@@ -203,6 +211,7 @@ async function runFertilizerByConfig(plantedLands = [], options = {}) {
     const fertilizerConfig = getAutomation().fertilizer || 'both';
     const planted = (Array.isArray(plantedLands) ? plantedLands : []).filter(Boolean);
     const { skipNormal = false } = options;
+    const minLandLevel = getFertilizeLandLevel();
 
     if (planted.length === 0 && fertilizerConfig !== 'organic' && fertilizerConfig !== 'both' && fertilizerConfig !== 'smart') {
         return { normal: 0, organic: 0 };
@@ -212,16 +221,38 @@ async function runFertilizerByConfig(plantedLands = [], options = {}) {
     let fertilizedOrganic = 0;
 
     if (!skipNormal && (fertilizerConfig === 'normal' || fertilizerConfig === 'both' || fertilizerConfig === 'smart') && planted.length > 0) {
-        fertilizedNormal = await fertilize(planted, NORMAL_FERTILIZER_ID);
-        if (fertilizedNormal > 0) {
-            log('施肥', `已为 ${fertilizedNormal}/${planted.length} 块地施无机化肥`, {
-            module: 'farm',
-            event: '施肥',
-            result: 'ok',
-            type: 'normal',
-            count: fertilizedNormal,
-        });
-            recordOperation('fertilize', fertilizedNormal);
+        let normalTargets = planted;
+        if (minLandLevel > 0) {
+            try {
+                const latest = await getAllLands();
+                const landsMap = new Map();
+                for (const land of (latest && latest.lands || [])) {
+                    const id = toNum(land && land.id);
+                    if (id > 0) landsMap.set(id, land);
+                }
+                normalTargets = planted.filter(landId => {
+                    const land = landsMap.get(landId);
+                    if (!land) return false;
+                    const landLevel = toNum(land.level);
+                    return landLevel >= minLandLevel;
+                });
+            } catch (e) {
+                logWarn('施肥', `获取农场地块等级失败: ${e.message}`);
+            }
+        }
+        if (normalTargets.length > 0) {
+            fertilizedNormal = await fertilize(normalTargets, NORMAL_FERTILIZER_ID);
+            if (fertilizedNormal > 0) {
+                log('施肥', `已为 ${fertilizedNormal}/${normalTargets.length} 块地施无机化肥`, {
+                module: 'farm',
+                event: '施肥',
+                result: 'ok',
+                type: 'normal',
+                count: fertilizedNormal,
+                minLandLevel,
+            });
+                recordOperation('fertilize', fertilizedNormal);
+            }
         }
     }
 
@@ -242,6 +273,7 @@ async function runFertilizerByConfig(plantedLands = [], options = {}) {
                 result: 'ok',
                 type: 'organic',
                 count: fertilizedOrganic,
+                minLandLevel,
             });
             recordOperation('fertilize', fertilizedOrganic);
         }
@@ -264,6 +296,7 @@ async function runFertilizerByConfig(plantedLands = [], options = {}) {
                     result: 'ok',
                     type: 'organic',
                     count: fertilizedOrganic,
+                    minLandLevel,
                 });
                 recordOperation('fertilize', fertilizedOrganic);
             }
@@ -399,7 +432,64 @@ async function findBestSeed() {
         return null;
     }
 
-    // 按策略排序
+    if (isAutomationOn('task_plant')) {
+        try {
+            const { getTaskInfo } = require('./task');
+            const reply = await getTaskInfo();
+            const taskInfo = reply.task_info || {};
+            const allTasks = [
+                ...(taskInfo.tasks || []),
+                ...(taskInfo.growth_tasks || []),
+                ...(taskInfo.daily_tasks || [])
+            ];
+            
+            for (const task of allTasks) {
+                if (!task.is_unlocked || task.is_claimed) continue;
+                const desc = task.desc || '';
+                const progress = toNum(task.progress);
+                const totalProgress = toNum(task.total_progress);
+                
+                if (progress >= totalProgress) continue;
+                
+                if (desc.match(/完成\d+次收获/)) {
+                    const radishSeed = available.find(a => a.seedId === 20002);
+                    if (radishSeed) {
+                        log('商店', `任务种植：选择 白萝卜 种子 (完成收获任务)`, {
+                            module: 'warehouse',
+                            event: '选择种子',
+                            mode: 'task_plant',
+                            seedId: 20002
+                        });
+                        return radishSeed;
+                    }
+                }
+                
+                let plantNameMatch = desc.match(/种植\d+株(.+)/);
+                if (!plantNameMatch) {
+                    plantNameMatch = desc.match(/购买\d+个(.+)种子/);
+                }
+                if (plantNameMatch && plantNameMatch[1]) {
+                    const targetPlantName = plantNameMatch[1].trim();
+                    const found = available.find(a => {
+                        const plantName = getPlantNameBySeedId(a.seedId);
+                        return plantName && plantName.includes(targetPlantName);
+                    });
+                    if (found) {
+                        log('商店', `任务种植：选择 ${getPlantNameBySeedId(found.seedId)} 种子`, {
+                            module: 'warehouse',
+                            event: '选择种子',
+                            mode: 'task_plant',
+                            seedId: found.seedId
+                        });
+                        return found;
+                    }
+                }
+            }
+        } catch (e) {
+            logWarn('商店', `任务种植获取任务失败: ${e.message}，按策略种植`);
+        }
+    }
+
     const strategy = getPlantingStrategy();
     const analyticsSortByMap = {
         max_exp: 'exp',
@@ -428,7 +518,6 @@ async function findBestSeed() {
         return available[0];
     }
     
-    // 偏好模式
     if (strategy === 'preferred') {
         const preferred = getPreferredSeed();
         if (preferred > 0) {
@@ -436,14 +525,11 @@ async function findBestSeed() {
             if (found) return found;
             logWarn('商店', `优先种子 ${preferred} 当前不可购买，回退自动选择`);
         }
-        // 如果偏好未找到或未设置，回退到默认（等级最高）
         available.sort((a, b) => b.requiredLevel - a.requiredLevel);
     }
-    // 最高等级模式
     else if (strategy === 'level') {
         available.sort((a, b) => b.requiredLevel - a.requiredLevel);
     } 
-    // 默认
     else {
         available.sort((a, b) => b.requiredLevel - a.requiredLevel);
     }

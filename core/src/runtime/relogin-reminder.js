@@ -127,7 +127,8 @@ function createReloginReminderService(options) {
 
     async function triggerOfflineReminder(payload = {}) {
         try {
-            const cfg = store.getOfflineReminder ? store.getOfflineReminder() : null;
+            const username = payload.username || '';
+            const cfg = store.getOfflineReminder ? store.getOfflineReminder(username) : null;
             if (!cfg) return;
 
             const channelName = String(cfg.channel || '').trim().toLowerCase();

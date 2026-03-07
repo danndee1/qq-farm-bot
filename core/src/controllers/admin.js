@@ -1412,6 +1412,49 @@ function startAdminServer(dataProvider) {
         }
     });
 
+    // 获取管理员微信配置（仅管理员）
+    app.get('/api/admin/wx-config', authRequired, adminRequired, (req, res) => {
+        try {
+            const config = store.getAdminWxConfig();
+            res.json({ ok: true, data: config });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    // 更新管理员微信配置（仅管理员）
+    app.post('/api/admin/wx-config', authRequired, adminRequired, (req, res) => {
+        try {
+            const { showWxConfigTab, showWxLoginTab, apiBase, apiKey, proxyApiUrl } = req.body || {};
+            const config = store.setAdminWxConfig({
+                showWxConfigTab: showWxConfigTab !== false,
+                showWxLoginTab: showWxLoginTab !== false,
+                apiBase,
+                apiKey,
+                proxyApiUrl,
+            });
+            res.json({ ok: true, data: config });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    // 获取管理员微信配置（普通用户可访问，用于判断是否显示标签）
+    app.get('/api/wx-config/public', (req, res) => {
+        try {
+            const config = store.getAdminWxConfig();
+            res.json({
+                ok: true,
+                data: {
+                    showWxConfigTab: config.showWxConfigTab,
+                    showWxLoginTab: config.showWxLoginTab,
+                }
+            });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
     // 保存用户微信登录配置
     app.post('/api/user/wxlogin-config', authRequired, (req, res) => {
         try {
@@ -1439,6 +1482,24 @@ function startAdminServer(dataProvider) {
             const user = req.currentUser;
             if (!user) {
                 return res.status(401).json({ ok: false, error: '未登录' });
+            }
+
+            const adminWxConfig = store.getAdminWxConfig();
+
+            // 如果管理员关闭了微信配置标签但打开了微信扫码登录标签，则使用管理员配置
+            if (!adminWxConfig.showWxConfigTab && adminWxConfig.showWxLoginTab) {
+                return res.json({
+                    ok: true,
+                    config: {
+                        enabled: true,
+                        apiBase: adminWxConfig.apiBase,
+                        apiKey: adminWxConfig.apiKey,
+                        proxyApiUrl: adminWxConfig.proxyApiUrl,
+                        appId: 'wx5306c5978fdb76e4',
+                        autoAddAccount: true,
+                        userIsolation: false,
+                    }
+                });
             }
 
             const result = userStore.getWxLoginConfig(user.username);

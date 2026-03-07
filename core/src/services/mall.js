@@ -1,14 +1,16 @@
 const { Buffer } = require('node:buffer');
 /**
  * 商城自动购买
- * 当前实现：自动购买有机化肥（item_id=1012）
+ * 支持购买普通化肥（item_id=1011）和有机化肥（item_id=1012）
  */
 
 const { sendMsgAsync, getUserState } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toNum, log, sleep } = require('../utils/utils');
+const { getFertilizerBuyType } = require('../models/store');
 
 const ORGANIC_FERTILIZER_MALL_GOODS_ID = 1002;
+const NORMAL_FERTILIZER_MALL_GOODS_ID = 1001;
 const BUY_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_ROUNDS = 100;
 const BUY_PER_ROUND = 10;
@@ -92,9 +94,16 @@ function findOrganicFertilizerMallGoods(goodsList) {
     return list.find((g) => toNum(g && g.goods_id) === ORGANIC_FERTILIZER_MALL_GOODS_ID) || null;
 }
 
-async function autoBuyOrganicFertilizerViaMall() {
+function findNormalFertilizerMallGoods(goodsList) {
+    const list = Array.isArray(goodsList) ? goodsList : [];
+    return list.find((g) => toNum(g && g.goods_id) === NORMAL_FERTILIZER_MALL_GOODS_ID) || null;
+}
+
+async function autoBuyFertilizerViaMall(buyType) {
     const goodsList = await getMallGoodsList(1);
-    const goods = findOrganicFertilizerMallGoods(goodsList);
+    const goods = buyType === 'normal' 
+        ? findNormalFertilizerMallGoods(goodsList) 
+        : findOrganicFertilizerMallGoods(goodsList);
     if (!goods) return 0;
 
     const goodsId = toNum(goods.goods_id);
@@ -141,16 +150,18 @@ async function autoBuyOrganicFertilizer(force = false) {
     lastBuyAt = now;
 
     try {
-        // 使用 MallService 购买链路（点券）
-        const totalBought = await autoBuyOrganicFertilizerViaMall();
+        const buyType = getFertilizerBuyType();
+        const totalBought = await autoBuyFertilizerViaMall(buyType);
         if (totalBought > 0) {
             buyDoneDateKey = getDateKey();
             buyLastSuccessAt = Date.now();
-            log('商城', `自动购买有机化肥 x${totalBought}`, {
+            const fertilizerName = buyType === 'normal' ? '普通化肥' : '有机化肥';
+            log('商城', `自动购买${fertilizerName} x${totalBought}`, {
                 module: 'warehouse',
                 event: '购买化肥',
                 result: 'ok',
                 count: totalBought,
+                type: buyType,
             });
         }
         return totalBought;

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useIntervalFn } from '@vueuse/core'
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import api from '@/api'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
@@ -20,6 +20,28 @@ const wxLoginStore = useWxLoginStore()
 const activeTab = ref<'qq' | 'wx' | 'wx-config' | 'manual'>('qq')
 const loading = ref(false)
 const errorMessage = ref('')
+
+// 管理员配置
+const adminWxConfig = ref({
+  showWxConfigTab: true,
+  showWxLoginTab: true,
+})
+
+async function loadAdminWxConfigPublic() {
+  try {
+    const { data } = await api.get('/api/wx-config/public')
+    if (data?.ok && data?.data) {
+      adminWxConfig.value = { ...adminWxConfig.value, ...data.data }
+    }
+  }
+  catch (e) {
+    console.error('加载管理员微信配置失败:', e)
+  }
+}
+
+onMounted(() => {
+  loadAdminWxConfigPublic()
+})
 
 // QQ扫码相关
 const qqQrData = ref<{ image?: string, code: string, qrcode?: string, url?: string } | null>(null)
@@ -341,6 +363,7 @@ watch(activeTab, (tab) => {
             QQ扫码
           </button>
           <button
+            v-if="adminWxConfig.showWxLoginTab"
             class="flex-1 py-2 text-center text-sm font-medium transition-colors"
             :class="activeTab === 'wx' ? 'border-b-2' : 'opacity-60'"
             :style="{
@@ -352,6 +375,7 @@ watch(activeTab, (tab) => {
             微信扫码
           </button>
           <button
+            v-if="adminWxConfig.showWxConfigTab"
             class="flex-1 py-2 text-center text-sm font-medium transition-colors"
             :class="activeTab === 'wx-config' ? 'border-b-2' : 'opacity-60'"
             :style="{

@@ -78,6 +78,7 @@ function createWorkerManager(options) {
             requests: new Map(), // pending API requests
             reqId: 1,
             name: account.name,
+            username: account.username || '',
             stopping: false,
             disconnectedSince: 0,
             autoDeleteTriggered: false,
@@ -262,6 +263,7 @@ function createWorkerManager(options) {
             triggerOfflineReminder({
                 accountId,
                 accountName: worker.name,
+                username: worker.username || '',
                 reason: `kickout:${reason}`,
                 offlineMs: 0,
             });

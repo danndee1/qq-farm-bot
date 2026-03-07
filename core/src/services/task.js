@@ -325,6 +325,7 @@ module.exports = {
     initTaskSystem,
     cleanupTaskSystem,
     claimTaskReward,
+    getTaskInfo,
     doClaim, // 供手动领取使用
     getTaskClaimDailyState: () => ({
         key: 'task_claim',
