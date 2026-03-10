@@ -1173,7 +1173,120 @@ function startAdminServer(dataProvider) {
             const offlineReminder = store.getOfflineReminder && currentUser
                 ? store.getOfflineReminder(currentUser.username)
                 : { channel: 'webhook', reloginUrlMode: 'none', endpoint: '', token: '', title: '账号下线提醒', msg: '账号下线', offlineDeleteSec: 120 };
-            res.json({ ok: true, data: { intervals, strategy, preferredSeed, friendQuietHours, automation, stealDelaySeconds, plantOrderRandom, plantDelaySeconds, ui, offlineReminder } });
+            // 获取秒收取配置
+            const fastHarvestConfig = (typeof store.getFastHarvestConfig === 'function') ? store.getFastHarvestConfig(id) : { enabled: false, advanceMs: 200 };
+            // 获取蹲守偷菜配置
+            const stakeoutStealConfig = (typeof store.getStakeoutStealConfig === 'function') ? store.getStakeoutStealConfig(id) : { enabled: false, delaySec: 3, maxAheadSec: 4 * 3600, friendList: [] };
+
+            res.json({
+                ok: true,
+                data: {
+                    intervals,
+                    strategy,
+                    preferredSeed,
+                    friendQuietHours,
+                    automation,
+                    stealDelaySeconds,
+                    plantOrderRandom,
+                    plantDelaySeconds,
+                    ui,
+                    offlineReminder,
+                    // 秒收取配置
+                    fastHarvestAdvanceMs: fastHarvestConfig.advanceMs,
+                    // 蹲守偷菜配置
+                    stakeoutSteal: {
+                        enabled: stakeoutStealConfig.enabled,
+                        delaySec: stakeoutStealConfig.delaySec,
+                        maxAheadSec: stakeoutStealConfig.maxAheadSec,
+                    },
+                    stakeoutFriendList: stakeoutStealConfig.friendList,
+                }
+            });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    // API: 获取蹲守好友列表
+    app.get('/api/stakeout/friends', authRequired, async (req, res) => {
+        try {
+            const id = getAccId(req);
+            if (!id) {
+                return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+            }
+
+            // 检查权限
+            if (!checkAccountAccess(req, id)) {
+                return res.status(403).json({ ok: false, error: '无权访问此账号' });
+            }
+
+            const config = (typeof store.getStakeoutStealConfig === 'function')
+                ? store.getStakeoutStealConfig(id)
+                : { friendList: [] };
+
+            res.json({ ok: true, data: { friendList: config.friendList || [] } });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    // API: 添加蹲守好友
+    app.post('/api/stakeout/friends/add', authRequired, async (req, res) => {
+        try {
+            const id = getAccId(req);
+            if (!id) {
+                return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+            }
+
+            // 检查权限
+            if (!checkAccountAccess(req, id)) {
+                return res.status(403).json({ ok: false, error: '无权访问此账号' });
+            }
+
+            const { friendGid } = req.body || {};
+            if (!friendGid || !Number.isFinite(Number(friendGid))) {
+                return res.status(400).json({ ok: false, error: 'Invalid friendGid' });
+            }
+
+            const result = (typeof store.setStakeoutFriendList === 'function')
+                ? store.setStakeoutFriendList(id, [
+                    ...(((store.getStakeoutStealConfig && store.getStakeoutStealConfig(id).friendList) || [])),
+                    Number(friendGid)
+                ])
+                : [];
+
+            res.json({ ok: true, data: { friendList: result } });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    // API: 移除蹲守好友
+    app.post('/api/stakeout/friends/remove', authRequired, async (req, res) => {
+        try {
+            const id = getAccId(req);
+            if (!id) {
+                return res.status(400).json({ ok: false, error: 'Missing x-account-id' });
+            }
+
+            // 检查权限
+            if (!checkAccountAccess(req, id)) {
+                return res.status(403).json({ ok: false, error: '无权访问此账号' });
+            }
+
+            const { friendGid } = req.body || {};
+            if (!friendGid || !Number.isFinite(Number(friendGid))) {
+                return res.status(400).json({ ok: false, error: 'Invalid friendGid' });
+            }
+
+            const currentList = (store.getStakeoutStealConfig && store.getStakeoutStealConfig(id).friendList) || [];
+            const newList = currentList.filter(gid => gid !== Number(friendGid));
+
+            const result = (typeof store.setStakeoutFriendList === 'function')
+                ? store.setStakeoutFriendList(id, newList)
+                : [];
+
+            res.json({ ok: true, data: { friendList: result } });
         } catch (e) {
             res.status(500).json({ ok: false, error: e.message });
         }

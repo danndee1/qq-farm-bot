@@ -224,7 +224,8 @@ async function runFarmTick(auto) {
     );
     try {
         if (auto.farm) await checkFarm();
-        if (auto.task) await checkAndClaimTasks();
+        // 强制领取任务奖励，不用开关控制
+        await checkAndClaimTasks();
         if (auto.email) await checkAndClaimEmails();
         if (auto.fertilizer_gift) await openFertilizerGiftPacksSilently();
         if (auto.fertilizer_buy) await autoBuyOrganicFertilizer();
@@ -694,7 +695,7 @@ async function getDailyGiftOverview() {
             {
                 key: 'task_claim',
                 label: '每日任务',
-                enabled: !!auto.task,
+                enabled: true, // 强制领取，不用开关控制
                 doneToday: !!task.doneToday,
                 lastAt: Number(task.lastClaimAt || 0),
                 completedCount: Number(task.completedCount || 0),

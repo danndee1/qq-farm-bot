@@ -14,12 +14,12 @@ export const useBagStore = defineStore('bag', () => {
   }
 
   const items = computed(() => {
-    const hiddenIds = new Set([1, 1001, 1002, 1101, 1011, 1012, 3001, 3002])
+    const hiddenIds = new Set([1, 1001, 1002, 1005, 1101, 1011, 1012, 3001, 3002])
     return allItems.value.filter((it: any) => !hiddenIds.has(Number(it.id || 0)))
   })
 
   const dashboardItems = computed(() => {
-    const targetIds = new Set([1011, 1012, 3001, 3002])
+    const targetIds = new Set([1005, 1011, 1012, 3001, 3002])
     return allItems.value.filter((it: any) => targetIds.has(Number(it.id || 0)))
   })
 
