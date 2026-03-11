@@ -259,7 +259,22 @@ function getAllSeeds() {
 }
 
 function getSeedImageBySeedId(seedId) {
-    return seedImageMap.get(Number(seedId) || 0) || '';
+    const id = Number(seedId) || 0;
+    
+    // 1. 优先按种子ID直接查找
+    const direct = seedImageMap.get(id);
+    if (direct) return direct;
+    
+    // 2. 备用：通过 Crop 编号查找（如种子ID 20112 → Crop_112_Seed.png）
+    // 种子ID格式为 20xxx，Crop编号为 xxx 部分
+    if (id >= 20000 && id < 30000) {
+        const cropNumber = id - 20000;
+        const assetName = `Crop_${cropNumber}`;
+        const byAsset = seedAssetImageMap.get(assetName);
+        if (byAsset) return byAsset;
+    }
+    
+    return '';
 }
 
 function getItemImageById(itemId) {

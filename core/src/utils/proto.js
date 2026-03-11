@@ -30,6 +30,7 @@ async function loadProto() {
         getResourcePath('proto', 'qqvippb.proto'),
         getResourcePath('proto', 'sharepb.proto'),
         getResourcePath('proto', 'illustratedpb.proto'),
+        getResourcePath('proto', 'interactpb.proto'),
     ], { keepCase: true });
 
     // 网关
@@ -133,6 +134,10 @@ async function loadProto() {
     types.VisitEnterReply = root.lookupType('gamepb.visitpb.EnterReply');
     types.VisitLeaveRequest = root.lookupType('gamepb.visitpb.LeaveRequest');
     types.VisitLeaveReply = root.lookupType('gamepb.visitpb.LeaveReply');
+
+    // 访客记录
+    types.InteractRecordsRequest = root.lookupType('gamepb.interactpb.InteractRecordsRequest');
+    types.InteractRecordsReply = root.lookupType('gamepb.interactpb.InteractRecordsReply');
 
     // 任务
     types.TaskInfoRequest = root.lookupType('gamepb.taskpb.TaskInfoRequest');

@@ -8,8 +8,9 @@ const { getLevelExpProgress } = require('../config/gameConfig');
 const { getAutomation, getPreferredSeed, getConfigSnapshot, applyConfigSnapshot } = require('../models/store');
 const { checkAndClaimEmails } = require('../services/email');
 const { getEmailDailyState } = require('../services/email');
-const { checkFarm, startFarmCheckLoop, stopFarmCheckLoop, refreshFarmCheckLoop, getLandsDetail, getAvailableSeeds, runFarmOperation, runFertilizerByConfig } = require('../services/farm');
+const { checkFarm, startFarmCheckLoop, stopFarmCheckLoop, refreshFarmCheckLoop, getLandsDetail, getAvailableSeeds, runFarmOperation, runFertilizerByConfig, loadDailyHarvestState } = require('../services/farm');
 const { checkFriends, startFriendCheckLoop, stopFriendCheckLoop, refreshFriendCheckLoop, runBadOnceOnStartup, isHelpExpLimitReached, getFriendsList, getFriendLandsDetail, doFriendOperation } = require('../services/friend');
+const { getInteractRecords } = require('../services/interact');
 const { processInviteCodes } = require('../services/invite');
 const { autoBuyOrganicFertilizer, buyFreeGifts, getFreeGiftDailyState } = require('../services/mall');
 const { performDailyMonthCardGift, getMonthCardDailyState } = require('../services/monthcard');
@@ -223,7 +224,8 @@ async function runFarmTick(auto) {
     );
     try {
         if (auto.farm) await checkFarm();
-        if (auto.task) await checkAndClaimTasks();
+        // 强制领取任务奖励，不用开关控制
+        await checkAndClaimTasks();
         if (auto.email) await checkAndClaimEmails();
         if (auto.fertilizer_gift) await openFertilizerGiftPacksSilently();
         if (auto.fertilizer_buy) await autoBuyOrganicFertilizer();
@@ -517,6 +519,9 @@ async function startBot(config) {
         setInitialValues(Number(latest.gold || 0), Number(latest.exp || 0), Number(latest.coupon || 0));
         resetSessionGains();
 
+        // 加载每日收获计数状态
+        loadDailyHarvestState();
+
         // 登录成功后启动各模块
         await processInviteCodes();
         if (getAutomation().fertilizer_gift) {
@@ -599,6 +604,9 @@ async function handleApiCall(msg) {
                 break;
             case 'getFriends':
                 result = await getFriendsList();
+                break;
+            case 'getInteractRecords':
+                result = await getInteractRecords();
                 break;
             case 'getFriendLands':
                 result = await getFriendLandsDetail(args[0]);
@@ -687,7 +695,7 @@ async function getDailyGiftOverview() {
             {
                 key: 'task_claim',
                 label: '每日任务',
-                enabled: !!auto.task,
+                enabled: true, // 强制领取，不用开关控制
                 doneToday: !!task.doneToday,
                 lastAt: Number(task.lastClaimAt || 0),
                 completedCount: Number(task.completedCount || 0),

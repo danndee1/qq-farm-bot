@@ -8,7 +8,7 @@ export type Theme = 'light-blue' | 'light-green' | 'light-pink' | 'dark-blue' | 
 
 export const useAppStore = defineStore('app', () => {
   const sidebarOpen = ref(false)
-  const currentTheme = ref<Theme>((localStorage.getItem(THEME_KEY) as Theme) || 'dark-blue')
+  const currentTheme = ref<Theme>((localStorage.getItem(THEME_KEY) as Theme) || 'light-pink')
   const showThemePanel = ref(false)
 
   const themes: Record<Theme, {

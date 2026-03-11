@@ -4,14 +4,16 @@
 
 const protobuf = require('protobufjs');
 const { CONFIG, PlantPhase, PHASE_NAMES } = require('../config/config');
-const { getPlantNameBySeedId, getPlantName, getPlantExp, formatGrowTime, getPlantGrowTime, getAllSeeds, getPlantById, getSeedImageBySeedId } = require('../config/gameConfig');
-const { isAutomationOn, getPreferredSeed, getAutomation, getPlantingStrategy, getPlantDelaySeconds, getFertilizeLandLevel } = require('../models/store');
+const { getPlantNameBySeedId, getPlantName, getPlantExp, formatGrowTime, getPlantGrowTime, getAllSeeds, getPlantById, getPlantBySeedId, getSeedImageBySeedId } = require('../config/gameConfig');
+const { isAutomationOn, getPreferredSeed, getAutomation, getPlantingStrategy, getPlantDelaySeconds, getFertilizeLandLevel, getFastHarvestConfig } = require('../models/store');
 const { sendMsgAsync, getUserState, networkEvents, getWsErrorState } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toLong, toNum, getServerTimeSec, toTimeSec, log, logWarn, sleep } = require('../utils/utils');
 const { getPlantRankings } = require('./analytics');
 const { createScheduler } = require('./scheduler');
 const { recordOperation } = require('./stats');
+const { getDataFile, ensureDataDir } = require('../config/runtime-paths');
+const { readJsonFile, writeJsonFileAtomic } = require('./json-db');
 
 // ============ 内部状态 ============
 let isCheckingFarm = false;
@@ -19,6 +21,90 @@ let isFirstFarmCheck = true;
 let farmLoopRunning = false;
 let externalSchedulerMode = false;
 const farmScheduler = createScheduler('farm');
+
+// ============ 秒收取状态 ============
+// 存储即将成熟的作物定时任务: Map<landId, { taskId, matureTime, timeoutId }>
+const fastHarvestTasks = new Map();
+// 秒收取时间窗口（秒）：在此时间范围内的作物才会被秒收
+// 注意：这个时间应该大于 advanceMs，否则提前收获不会生效
+const FAST_HARVEST_WINDOW_SEC = 300; // 5分钟窗口，给 advanceMs 足够空间
+// 秒收取任务ID计数器
+let fastHarvestTaskIdCounter = 0;
+
+// 每日收获状态
+let lastHarvestDate = '';
+let dailyHarvestCount = 0;
+const RADISH_TARGET_COUNT = 600;
+
+function getHarvestAccountId() {
+    const state = getUserState();
+    return String(state.accountId || 'default');
+}
+
+function getDailyHarvestFile() {
+    return getDataFile('daily_harvest.json');
+}
+
+function getBeijingDateKey() {
+    const nowSec = getServerTimeSec();
+    const nowMs = nowSec > 0 ? nowSec * 1000 : Date.now();
+    const bjOffset = 8 * 3600 * 1000;
+    const bjDate = new Date(nowMs + bjOffset);
+    const y = bjDate.getUTCFullYear();
+    const m = String(bjDate.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(bjDate.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
+function loadDailyHarvestState() {
+    const file = getDailyHarvestFile();
+    const allData = readJsonFile(file, () => ({}));
+    const accountId = getHarvestAccountId();
+    const today = getBeijingDateKey();
+
+    const accountData = allData[accountId] || { date: '', count: 0 };
+
+    if (accountData.date === today) {
+        dailyHarvestCount = Number(accountData.count) || 0;
+        lastHarvestDate = today;
+    } else {
+        dailyHarvestCount = 0;
+        lastHarvestDate = today;
+    }
+    return dailyHarvestCount;
+}
+
+function saveDailyHarvestState() {
+    const file = getDailyHarvestFile();
+    ensureDataDir();
+    const allData = readJsonFile(file, () => ({}));
+    const accountId = getHarvestAccountId();
+    
+    allData[accountId] = {
+        date: lastHarvestDate,
+        count: dailyHarvestCount
+    };
+    
+    writeJsonFileAtomic(file, allData);
+}
+
+function addHarvestCount(count) {
+    const today = getBeijingDateKey();
+    if (lastHarvestDate !== today) {
+        lastHarvestDate = today;
+        dailyHarvestCount = 0;
+    }
+    dailyHarvestCount += count;
+    saveDailyHarvestState();
+}
+
+function getDailyHarvestCount() {
+    const today = getBeijingDateKey();
+    if (lastHarvestDate !== today) {
+        loadDailyHarvestState();
+    }
+    return dailyHarvestCount;
+}
 
 // ============ 农场 API ============
 
@@ -166,6 +252,89 @@ function getOrganicFertilizerTargetsFromLands(lands) {
     return targets;
 }
 
+function getSlaveLandIds(land) {
+    const ids = Array.isArray(land && land.slave_land_ids) ? land.slave_land_ids : [];
+    return [...new Set(ids.map(id => toNum(id)).filter(Boolean))];
+}
+
+function hasPlantData(land) {
+    const plant = land && land.plant;
+    return !!(plant && Array.isArray(plant.phases) && plant.phases.length > 0);
+}
+
+function getLinkedMasterLand(land, landsMap) {
+    const landId = toNum(land && land.id);
+    const masterLandId = toNum(land && land.master_land_id);
+    if (!masterLandId || masterLandId === landId) return null;
+
+    const masterLand = landsMap.get(masterLandId);
+    if (!masterLand) return null;
+
+    const slaveIds = getSlaveLandIds(masterLand);
+    if (slaveIds.length > 0 && !slaveIds.includes(landId)) return null;
+
+    return masterLand;
+}
+
+function buildSlaveToMasterMap(lands) {
+    const map = new Map();
+    for (const land of (Array.isArray(lands) ? lands : [])) {
+        const slaveIds = getSlaveLandIds(land);
+        const masterId = toNum(land && land.id);
+        if (slaveIds.length > 0 && masterId > 0) {
+            for (const slaveId of slaveIds) {
+                if (slaveId > 0 && slaveId !== masterId) {
+                    map.set(slaveId, masterId);
+                }
+            }
+        }
+    }
+    return map;
+}
+
+function getDisplayLandContext(land, landsMap, slaveToMasterMap) {
+    const landId = toNum(land && land.id);
+    
+    const masterLand = getLinkedMasterLand(land, landsMap);
+    if (masterLand && hasPlantData(masterLand)) {
+        const occupiedLandIds = [toNum(masterLand.id), ...getSlaveLandIds(masterLand)].filter(Boolean);
+        return {
+            sourceLand: masterLand,
+            occupiedByMaster: true,
+            masterLandId: toNum(masterLand.id),
+            occupiedLandIds: occupiedLandIds.length > 0 ? occupiedLandIds : [toNum(masterLand.id)].filter(Boolean),
+        };
+    }
+
+    if (slaveToMasterMap) {
+        const masterIdFromMap = slaveToMasterMap.get(landId);
+        if (masterIdFromMap) {
+            const masterFromMap = landsMap.get(masterIdFromMap);
+            if (masterFromMap && hasPlantData(masterFromMap)) {
+                const occupiedLandIds = [toNum(masterFromMap.id), ...getSlaveLandIds(masterFromMap)].filter(Boolean);
+                return {
+                    sourceLand: masterFromMap,
+                    occupiedByMaster: true,
+                    masterLandId: toNum(masterFromMap.id),
+                    occupiedLandIds: occupiedLandIds.length > 0 ? occupiedLandIds : [toNum(masterFromMap.id)].filter(Boolean),
+                };
+            }
+        }
+    }
+
+    const selfId = toNum(land && land.id);
+    return {
+        sourceLand: land,
+        occupiedByMaster: false,
+        masterLandId: selfId,
+        occupiedLandIds: [selfId].filter(Boolean),
+    };
+}
+
+function isOccupiedSlaveLand(land, landsMap, slaveToMasterMap) {
+    return !!getDisplayLandContext(land, landsMap, slaveToMasterMap).occupiedByMaster;
+}
+
 function getFastMatureLands(lands) {
     const list = Array.isArray(lands) ? lands : [];
     const targets = [];
@@ -210,8 +379,11 @@ function getFastMatureLands(lands) {
 async function runFertilizerByConfig(plantedLands = [], options = {}) {
     const fertilizerConfig = getAutomation().fertilizer || 'both';
     const planted = (Array.isArray(plantedLands) ? plantedLands : []).filter(Boolean);
-    const { skipNormal = false } = options;
+    const { skipNormal = false, reason = 'normal' } = options;
     const minLandLevel = getFertilizeLandLevel();
+    const isMultiSeason = String(reason).trim().toLowerCase() === 'multi_season';
+    const reasonLabel = isMultiSeason ? '多季补肥' : '常规施肥';
+    const eventName = isMultiSeason ? '多季补肥' : '施肥';
 
     if (planted.length === 0 && fertilizerConfig !== 'organic' && fertilizerConfig !== 'both' && fertilizerConfig !== 'smart') {
         return { normal: 0, organic: 0 };
@@ -243,9 +415,9 @@ async function runFertilizerByConfig(plantedLands = [], options = {}) {
         if (normalTargets.length > 0) {
             fertilizedNormal = await fertilize(normalTargets, NORMAL_FERTILIZER_ID);
             if (fertilizedNormal > 0) {
-                log('施肥', `已为 ${fertilizedNormal}/${normalTargets.length} 块地施无机化肥`, {
+                log('施肥', `${reasonLabel}：已为 ${fertilizedNormal}/${normalTargets.length} 块地施无机化肥`, {
                 module: 'farm',
-                event: '施肥',
+                event: eventName,
                 result: 'ok',
                 type: 'normal',
                 count: fertilizedNormal,
@@ -267,9 +439,9 @@ async function runFertilizerByConfig(plantedLands = [], options = {}) {
 
         fertilizedOrganic = await fertilizeOrganicLoop(organicTargets);
         if (fertilizedOrganic > 0) {
-            log('施肥', `有机化肥循环施肥完成，共施 ${fertilizedOrganic} 次`, {
+            log('施肥', `${reasonLabel}：有机化肥循环施肥完成，共施 ${fertilizedOrganic} 次`, {
                 module: 'farm',
-                event: '施肥',
+                event: eventName,
                 result: 'ok',
                 type: 'organic',
                 count: fertilizedOrganic,
@@ -290,9 +462,9 @@ async function runFertilizerByConfig(plantedLands = [], options = {}) {
         if (organicTargets.length > 0) {
             fertilizedOrganic = await fertilizeOrganicLoop(organicTargets);
             if (fertilizedOrganic > 0) {
-                log('施肥', `有机化肥循环施肥完成，共施 ${fertilizedOrganic} 次`, {
+                log('施肥', `${reasonLabel}：有机化肥循环施肥完成，共施 ${fertilizedOrganic} 次`, {
                     module: 'farm',
-                    event: '施肥',
+                    event: eventName,
                     result: 'ok',
                     type: 'organic',
                     count: fertilizedOrganic,
@@ -366,25 +538,57 @@ function encodePlantRequest(seedId, landIds) {
     return writer.finish();
 }
 
+function getPlantSizeBySeedId(seedId) {
+    const plantCfg = getPlantBySeedId(toNum(seedId));
+    return Math.max(1, toNum(plantCfg && plantCfg.size) || 1);
+}
+
 /**
  * 种植 - 游戏中拖动种植间隔很短，默认 50ms，可通过 plantDelaySeconds 配置
  */
-async function plantSeeds(seedId, landIds) {
+async function plantSeeds(seedId, landIds, options = {}) {
     const delaySec = getPlantDelaySeconds();
     const delayMs = delaySec > 0 ? delaySec * 1000 : 50;
     let successCount = 0;
-    for (const landId of landIds) {
+    const plantedLandIds = [];
+    const occupiedLandIds = new Set();
+    const maxPlantCount = Math.max(0, toNum(options.maxPlantCount) || 0) || Number.POSITIVE_INFINITY;
+    const pendingLandIds = new Set((Array.isArray(landIds) ? landIds : []).map(id => toNum(id)).filter(Boolean));
+
+    for (const rawLandId of landIds) {
+        const landId = toNum(rawLandId);
+        if (!landId || !pendingLandIds.has(landId)) continue;
+        if (successCount >= maxPlantCount) break;
+
         try {
             const body = encodePlantRequest(seedId, [landId]);
             const { body: replyBody } = await sendMsgAsync('gamepb.plantpb.PlantService', 'Plant', body);
-            types.PlantReply.decode(replyBody);
+            const reply = types.PlantReply.decode(replyBody);
+            const changedLands = Array.isArray(reply && reply.land) ? reply.land : [];
+            const changedMap = buildLandMap(changedLands);
+            const changedSlaveToMasterMap = buildSlaveToMasterMap(changedLands);
+            const selfLand = changedMap.get(landId);
+            const displayContext = getDisplayLandContext(selfLand || { id: landId }, changedMap, changedSlaveToMasterMap);
+            const occupiedIds = displayContext.occupiedLandIds.length > 0
+                ? displayContext.occupiedLandIds
+                : [landId];
+
             successCount++;
+            plantedLandIds.push(displayContext.masterLandId || landId);
+            for (const occupiedId of occupiedIds) {
+                occupiedLandIds.add(occupiedId);
+                pendingLandIds.delete(occupiedId);
+            }
         } catch (e) {
             logWarn('种植', `土地#${landId} 失败: ${e.message}`);
         }
         await sleep(delayMs);
     }
-    return successCount;
+    return {
+        planted: successCount,
+        plantedLandIds,
+        occupiedLandIds: [...occupiedLandIds],
+    };
 }
 
 async function findBestSeed() {
@@ -432,7 +636,9 @@ async function findBestSeed() {
         return null;
     }
 
-    if (isAutomationOn('task_plant')) {
+    const strategy = getPlantingStrategy();
+
+    if (strategy === 'task' || isAutomationOn('task_plant')) {
         try {
             const { getTaskInfo } = require('./task');
             const reply = await getTaskInfo();
@@ -443,14 +649,13 @@ async function findBestSeed() {
                 ...(taskInfo.daily_tasks || [])
             ];
             
+            // 优先级1: 收获任务 - 种白萝卜（成熟快）
             for (const task of allTasks) {
                 if (!task.is_unlocked || task.is_claimed) continue;
                 const desc = task.desc || '';
                 const progress = toNum(task.progress);
                 const totalProgress = toNum(task.total_progress);
-                
                 if (progress >= totalProgress) continue;
-                
                 if (desc.match(/完成\d+次收获/)) {
                     const radishSeed = available.find(a => a.seedId === 20002);
                     if (radishSeed) {
@@ -463,6 +668,16 @@ async function findBestSeed() {
                         return radishSeed;
                     }
                 }
+            }
+            
+            // 优先级2: 种植/购买指定作物任务
+            for (const task of allTasks) {
+                if (!task.is_unlocked || task.is_claimed) continue;
+                const desc = task.desc || '';
+                const progress = toNum(task.progress);
+                const totalProgress = toNum(task.total_progress);
+                
+                if (progress >= totalProgress) continue;
                 
                 let plantNameMatch = desc.match(/种植\d+株(.+)/);
                 if (!plantNameMatch) {
@@ -486,11 +701,94 @@ async function findBestSeed() {
                 }
             }
         } catch (e) {
-            logWarn('商店', `任务种植获取任务失败: ${e.message}，按策略种植`);
+            logWarn('商店', `任务种植获取任务失败: ${e.message}`);
+        }
+    }
+    
+    // 优先级3: 每日萝卜600经验（当日收获数量未达到目标时种萝卜）
+    if (isAutomationOn('task_plant_first_harvest_radish')) {
+        const currentCount = getDailyHarvestCount();
+        if (currentCount < RADISH_TARGET_COUNT) {
+            const radishSeed = available.find(a => a.seedId === 20002);
+            if (radishSeed) {
+                log('商店', `萝卜600经验：选择 白萝卜 种子 (${currentCount}/${RADISH_TARGET_COUNT})`, {
+                    module: 'warehouse',
+                    event: '选择种子',
+                    mode: 'radish_600_exp',
+                    seedId: 20002,
+                    currentCount,
+                    target: RADISH_TARGET_COUNT
+                });
+                return radishSeed;
+            }
+        } else {
+            log('商店', `萝卜600经验已完成 (${currentCount}/${RADISH_TARGET_COUNT})，使用账号策略`, {
+                module: 'warehouse',
+                event: '萝卜600完成',
+                currentCount,
+                target: RADISH_TARGET_COUNT
+            });
         }
     }
 
-    const strategy = getPlantingStrategy();
+    // 优先级4: 活动种植（只检查背包中的活动种子）
+    if (isAutomationOn('event_plant')) {
+        const EVENT_SEEDS = [
+            { seedId: 20224, name: '昙花' },
+            { seedId: 20249, name: '荷包牡丹' },
+            { seedId: 20025, name: '银杏树苗' },
+            { seedId: 20109, name: '蝴蝶兰' },
+            { seedId: 20112, name: '风信子' },
+            { seedId: 20121, name: '蔷薇' },
+        ];
+        
+        try {
+            const { getBag } = require('./warehouse');
+            const bagReply = await getBag();
+            const bagItems = bagReply && bagReply.item_bag && bagReply.item_bag.items 
+                ? bagReply.item_bag.items 
+                : (bagReply && bagReply.items ? bagReply.items : []);
+            
+            for (const eventSeed of EVENT_SEEDS) {
+                const bagItem = bagItems.find(item => toNum(item.id) === eventSeed.seedId && toNum(item.count) > 0);
+                if (bagItem) {
+                    log('商店', `活动种植：背包已有 ${eventSeed.name} 种子 x${toNum(bagItem.count)}`, {
+                        module: 'warehouse',
+                        event: '选择种子',
+                        mode: 'event_plant',
+                        seedId: eventSeed.seedId,
+                        name: eventSeed.name,
+                        bagCount: toNum(bagItem.count),
+                    });
+                    return {
+                        goods: null,
+                        goodsId: 0,
+                        seedId: eventSeed.seedId,
+                        price: 0,
+                        requiredLevel: 0,
+                        fromBag: true,
+                    };
+                }
+            }
+        } catch (e) {
+            logWarn('商店', `活动种植检查背包失败: ${e.message}`);
+        }
+        
+        log('商店', '活动种植：背包中未找到活动作物种子，使用账号策略', {
+            module: 'warehouse',
+            event: '活动种植回退',
+        });
+    }
+
+    // 优先级5: 按账号设定的种植策略
+    if (strategy === 'task' || isAutomationOn('task_plant')) {
+        log('商店', '任务种植未找到需要种植的作物，使用账号策略', {
+            module: 'warehouse',
+            event: '回退策略',
+            strategy
+        });
+    }
+    
     const analyticsSortByMap = {
         max_exp: 'exp',
         max_fert_exp: 'fert',
@@ -598,131 +896,142 @@ async function getLandsDetail() {
     try {
         const landsReply = await getAllLands();
         if (!landsReply.lands) return { lands: [], summary: {} };
-        const status = analyzeLands(landsReply.lands);
         const nowSec = getServerTimeSec();
+        const landsMap = buildLandMap(landsReply.lands);
+        const slaveToMasterMap = buildSlaveToMasterMap(landsReply.lands);
         const lands = [];
 
         for (const land of landsReply.lands) {
-            const id = toNum(land.id);
-            const level = toNum(land.level);
-            const maxLevel = toNum(land.max_level);
-            const landsLevel = toNum(land.lands_level);
-            const landSize = toNum(land.land_size);
-            const couldUnlock = !!land.could_unlock;
-            const couldUpgrade = !!land.could_upgrade;
-            if (!land.unlocked) {
+            const basic = getLandBasicInfo(land);
+            const {
+                sourceLand,
+                occupiedByMaster,
+                masterLandId,
+                occupiedLandIds,
+            } = getDisplayLandContext(land, landsMap, slaveToMasterMap);
+            
+            if (!basic.unlocked) {
                 lands.push({
-                    id,
+                    id: basic.id,
                     unlocked: false,
                     status: 'locked',
                     plantName: '',
                     phaseName: '',
-                    level,
-                    maxLevel,
-                    landsLevel,
-                    landSize,
-                    couldUnlock,
-                    couldUpgrade,
+                    level: basic.level,
+                    maxLevel: basic.maxLevel,
+                    landsLevel: basic.landsLevel,
+                    landSize: basic.landSize,
+                    couldUnlock: basic.couldUnlock,
+                    couldUpgrade: basic.couldUpgrade,
+                    currentSeason: 0,
+                    totalSeason: 0,
+                    occupiedByMaster: false,
+                    masterLandId: 0,
+                    occupiedLandIds: [],
+                    plantSize: 1,
                 });
                 continue;
             }
-            const plant = land.plant;
-            if (!plant || !plant.phases || plant.phases.length === 0) {
+            
+            const plantInfo = getPlantInfo(sourceLand, nowSec);
+            if (!plantInfo) {
                 lands.push({
-                    id,
+                    id: basic.id,
                     unlocked: true,
                     status: 'empty',
                     plantName: '',
                     phaseName: '空地',
-                    level,
-                    maxLevel,
-                    landsLevel,
-                    landSize,
-                    couldUnlock,
-                    couldUpgrade,
+                    level: basic.level,
+                    maxLevel: basic.maxLevel,
+                    landsLevel: basic.landsLevel,
+                    landSize: basic.landSize,
+                    couldUnlock: basic.couldUnlock,
+                    couldUpgrade: basic.couldUpgrade,
+                    currentSeason: 0,
+                    totalSeason: 0,
+                    occupiedByMaster,
+                    masterLandId,
+                    occupiedLandIds,
+                    plantSize: 1,
                 });
                 continue;
             }
-            const currentPhase = getCurrentPhase(plant.phases, false, '');
-            if (!currentPhase) {
-                lands.push({
-                    id,
-                    unlocked: true,
-                    status: 'empty',
-                    plantName: '',
-                    phaseName: '',
-                    level,
-                    maxLevel,
-                    landsLevel,
-                    landSize,
-                    couldUnlock,
-                    couldUpgrade,
-                });
-                continue;
-            }
-            const phaseVal = currentPhase.phase;
-            const plantId = toNum(plant.id);
-            const plantName = getPlantName(plantId) || plant.name || '未知';
+
+            const plantId = toNum(sourceLand && sourceLand.plant && sourceLand.plant.id);
             const plantCfg = getPlantById(plantId);
-            const seedId = toNum(plantCfg && plantCfg.seed_id);
-            const seedImage = seedId > 0 ? getSeedImageBySeedId(seedId) : '';
-            const phaseName = PHASE_NAMES[phaseVal] || '';
-            const maturePhase = Array.isArray(plant.phases)
-                ? plant.phases.find((p) => p && toNum(p.phase) === PlantPhase.MATURE)
-                : null;
-            const matureBegin = maturePhase ? toTimeSec(maturePhase.begin_time) : 0;
-            const matureInSec = matureBegin > nowSec ? (matureBegin - nowSec) : 0;
-
-            let landStatus = 'growing';
-            if (phaseVal === PlantPhase.MATURE) landStatus = 'harvestable';
-            else if (phaseVal === PlantPhase.DEAD) landStatus = 'dead';
-            else if (phaseVal === PlantPhase.UNKNOWN || !plant.phases.length) landStatus = 'empty';
-
-            const needWater = (toNum(plant.dry_num) > 0) || (toTimeSec(currentPhase.dry_time) > 0 && toTimeSec(currentPhase.dry_time) <= nowSec);
-            const needWeed = (plant.weed_owners && plant.weed_owners.length > 0) || (toTimeSec(currentPhase.weeds_time) > 0 && toTimeSec(currentPhase.weeds_time) <= nowSec);
-            const needBug = (plant.insect_owners && plant.insect_owners.length > 0) || (toTimeSec(currentPhase.insect_time) > 0 && toTimeSec(currentPhase.insect_time) <= nowSec);
+            const plantSize = Math.max(1, toNum(plantCfg && plantCfg.size) || 1);
+            const totalSeason = Math.max(1, toNum(plantCfg && plantCfg.seasons) || 1);
+            const currentSeasonRaw = toNum(sourceLand && sourceLand.plant && sourceLand.plant.season);
+            const currentSeason = currentSeasonRaw > 0 ? Math.min(currentSeasonRaw, totalSeason) : 1;
 
             lands.push({
-                id,
+                id: basic.id,
                 unlocked: true,
-                status: landStatus,
-                plantName,
-                seedId,
-                seedImage,
-                phaseName,
-                matureInSec,
-                needWater,
-                needWeed,
-                needBug,
-                stealable: !!plant.stealable,
-                level,
-                maxLevel,
-                landsLevel,
-                landSize,
-                couldUnlock,
-                couldUpgrade,
+                status: plantInfo.status,
+                plantName: plantInfo.plantName,
+                seedId: plantInfo.seedId,
+                seedImage: plantInfo.seedImage,
+                phaseName: plantInfo.phaseName,
+                currentSeason,
+                totalSeason,
+                matureInSec: plantInfo.matureInSec,
+                needWater: plantInfo.needWater,
+                needWeed: plantInfo.needWeed,
+                needBug: plantInfo.needBug,
+                stealable: plantInfo.stealable,
+                level: basic.level,
+                maxLevel: basic.maxLevel,
+                landsLevel: basic.landsLevel,
+                landSize: basic.landSize,
+                couldUnlock: basic.couldUnlock,
+                couldUpgrade: basic.couldUpgrade,
+                occupiedByMaster,
+                masterLandId,
+                occupiedLandIds,
+                plantSize,
             });
         }
 
+        const status = summarizeLandDetails(landsReply.lands);
         return {
             lands,
-            summary: {
-                harvestable: status.harvestable.length,
-                growing: status.growing.length,
-                empty: status.empty.length,
-                dead: status.dead.length,
-                needWater: status.needWater.length,
-                needWeed: status.needWeed.length,
-                needBug: status.needBug.length,
-            },
+            summary: status,
         };
     } catch {
         return { lands: [], summary: {} };
     }
 }
 
+function summarizeLandDetails(lands) {
+    const summary = {
+        harvestable: 0,
+        growing: 0,
+        empty: 0,
+        dead: 0,
+        needWater: 0,
+        needWeed: 0,
+        needBug: 0,
+    };
+
+    for (const land of Array.isArray(lands) ? lands : []) {
+        if (!land || !land.unlocked) continue;
+
+        const status = String(land.status || '');
+        if (status === 'harvestable') summary.harvestable++;
+        else if (status === 'dead') summary.dead++;
+        else if (status === 'empty') summary.empty++;
+        else if (status === 'growing' || status === 'stealable' || status === 'harvested') summary.growing++;
+
+        if (land.needWater) summary.needWater++;
+        if (land.needWeed) summary.needWeed++;
+        if (land.needBug) summary.needBug++;
+    }
+
+    return summary;
+}
+
 async function autoPlantEmptyLands(deadLandIds, emptyLandIds) {
-    let landsToPlant = [...emptyLandIds];
+    const landsToPlant = [...emptyLandIds];
     const state = getUserState();
 
     // 1. 铲除枯死/收获残留植物（一键操作）
@@ -757,63 +1066,96 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds) {
     const seedName = getPlantNameBySeedId(bestSeed.seedId);
     const growTime = getPlantGrowTime(1020000 + (bestSeed.seedId - 20000));  // 转换为植物ID
     const growTimeStr = growTime > 0 ? ` 生长${formatGrowTime(growTime)}` : '';
+    const plantSize = getPlantSizeBySeedId(bestSeed.seedId);
+    const landFootprint = plantSize * plantSize;
     log('商店', `最佳种子: ${seedName} (${bestSeed.seedId}) 价格=${bestSeed.price}金币${growTimeStr}`, {
         module: 'warehouse', event: '选择种子', seedId: bestSeed.seedId, price: bestSeed.price
     });
 
-    // 3. 购买
-    const needCount = landsToPlant.length;
-    const totalCost = bestSeed.price * needCount;
-    if (totalCost > state.gold) {
-        logWarn('商店', `金币不足! 需要 ${totalCost} 金币, 当前 ${state.gold} 金币`, {
-            module: 'farm', event: '购买种子跳过', result: 'insufficient_gold', need: totalCost, current: state.gold
-        });
-        const canBuy = Math.floor(state.gold / bestSeed.price);
-        if (canBuy <= 0) return;
-        landsToPlant = landsToPlant.slice(0, canBuy);
-        log('商店', `金币有限，只种 ${canBuy} 块地`);
+    // 3. 购买（如果种子来自背包则跳过购买）
+    let needCount = landsToPlant.length;
+    if (landFootprint > 1) {
+        needCount = Math.floor(landsToPlant.length / landFootprint);
+        if (needCount <= 0) {
+            log('种植', `${seedName} 需要至少 ${landFootprint} 块空地才能合并种植，当前仅 ${landsToPlant.length} 块可用，已跳过`, {
+                module: 'farm',
+                event: '种植种子',
+                result: 'skip',
+                seedId: bestSeed.seedId,
+                landFootprint,
+                emptyCount: landsToPlant.length,
+            });
+            return;
+        }
     }
-
+    
     let actualSeedId = bestSeed.seedId;
-    try {
-        const buyReply = await buyGoods(bestSeed.goodsId, landsToPlant.length, bestSeed.price);
-        if (buyReply.get_items && buyReply.get_items.length > 0) {
-            const gotItem = buyReply.get_items[0];
-            const gotId = toNum(gotItem.id);
-            if (gotId > 0) actualSeedId = gotId;
-        }
-        if (buyReply.cost_items) {
-            for (const item of buyReply.cost_items) {
-                state.gold -= toNum(item.count);
-            }
-        }
-        const boughtName = getPlantNameBySeedId(actualSeedId);
-        log('购买', `已购买 ${boughtName}种子 x${landsToPlant.length}, 花费 ${bestSeed.price * landsToPlant.length} 金币`, {
+    
+    if (bestSeed.fromBag) {
+        // 种子来自背包，无需购买
+        log('种植', `使用背包中的 ${seedName} 种子进行种植`, {
             module: 'warehouse',
-            event: '购买种子',
+            event: '使用背包种子',
             result: 'ok',
             seedId: actualSeedId,
-            count: landsToPlant.length,
-            cost: bestSeed.price * landsToPlant.length,
         });
-    } catch (e) {
-        logWarn('购买', e.message);
-        return;
+    } else {
+        // 需要从商店购买
+        const totalCost = bestSeed.price * needCount;
+        if (totalCost > state.gold) {
+            logWarn('商店', `金币不足! 需要 ${totalCost} 金币, 当前 ${state.gold} 金币`, {
+                module: 'farm', event: '购买种子跳过', result: 'insufficient_gold', need: totalCost, current: state.gold
+            });
+            const canBuy = Math.floor(state.gold / bestSeed.price);
+            if (canBuy <= 0) return;
+            needCount = canBuy;
+            log('商店', plantSize > 1 ? `金币有限，只尝试种植 ${canBuy} 组 ${plantSize}x${plantSize} 作物` : `金币有限，只种 ${canBuy} 块地`);
+        }
+
+        try {
+            const buyReply = await buyGoods(bestSeed.goodsId, needCount, bestSeed.price);
+            if (buyReply.get_items && buyReply.get_items.length > 0) {
+                const gotItem = buyReply.get_items[0];
+                const gotId = toNum(gotItem.id);
+                if (gotId > 0) actualSeedId = gotId;
+            }
+            if (buyReply.cost_items) {
+                for (const item of buyReply.cost_items) {
+                    state.gold -= toNum(item.count);
+                }
+            }
+            const boughtName = getPlantNameBySeedId(actualSeedId);
+            log('购买', `已购买 ${boughtName}种子 x${needCount}, 花费 ${bestSeed.price * needCount} 金币`, {
+                module: 'warehouse',
+                event: '购买种子',
+                result: 'ok',
+                seedId: actualSeedId,
+                count: needCount,
+                cost: bestSeed.price * needCount,
+            });
+        } catch (e) {
+            logWarn('购买', e.message);
+            return;
+        }
     }
 
     // 4. 种植（逐块拖动，间隔50ms）
     let plantedLands = [];
     try {
-        const planted = await plantSeeds(actualSeedId, landsToPlant);
-        log('种植', `已在 ${planted} 块地种植 (${landsToPlant.join(',')})`, {
+        const { planted, plantedLandIds, occupiedLandIds } = await plantSeeds(actualSeedId, landsToPlant, { maxPlantCount: needCount });
+        const occupiedCount = occupiedLandIds.length > 0 ? occupiedLandIds.length : planted;
+        log('种植', plantSize > 1
+            ? `已种植 ${planted} 组 ${plantSize}x${plantSize} 作物，占用 ${occupiedCount} 块地 (${occupiedLandIds.join(',')})`
+            : `已在 ${planted} 块地种植 (${landsToPlant.slice(0, planted).join(',')})`, {
             module: 'farm',
             event: '种植种子',
             result: 'ok',
             seedId: actualSeedId,
             count: planted,
+            occupiedCount,
         });
         if (planted > 0) {
-            plantedLands = landsToPlant.slice(0, planted);
+            plantedLands = plantedLandIds;
         }
     } catch (e) {
         logWarn('种植', e.message);
@@ -856,6 +1198,63 @@ function getCurrentPhase(phases, debug, landLabel) {
     return phases[0];
 }
 
+function getLandBasicInfo(land) {
+    const id = toNum(land.id);
+    const level = toNum(land.level);
+    const maxLevel = toNum(land.max_level);
+    const landsLevel = toNum(land.lands_level);
+    const landSize = toNum(land.land_size);
+    const couldUnlock = !!land.could_unlock;
+    const couldUpgrade = !!land.could_upgrade;
+    const unlocked = !!land.unlocked;
+    return { id, level, maxLevel, landsLevel, landSize, couldUnlock, couldUpgrade, unlocked };
+}
+
+function getPlantInfo(land, nowSec) {
+    const plant = land.plant;
+    if (!plant || !plant.phases || plant.phases.length === 0) {
+        return null;
+    }
+    const currentPhase = getCurrentPhase(plant.phases, false, '');
+    if (!currentPhase) return null;
+
+    const phaseVal = currentPhase.phase;
+    const plantId = toNum(plant.id);
+    const plantName = getPlantName(plantId) || plant.name || '未知';
+    const plantCfg = getPlantById(plantId);
+    const seedId = toNum(plantCfg && plantCfg.seed_id);
+    const seedImage = seedId > 0 ? getSeedImageBySeedId(seedId) : '';
+    const phaseName = PHASE_NAMES[phaseVal] || '';
+    const maturePhase = Array.isArray(plant.phases)
+        ? plant.phases.find((p) => p && toNum(p.phase) === PlantPhase.MATURE)
+        : null;
+    const matureBegin = maturePhase ? toTimeSec(maturePhase.begin_time) : 0;
+    const matureInSec = matureBegin > nowSec ? (matureBegin - nowSec) : 0;
+    const needWater = (toNum(plant.dry_num) > 0) || (toTimeSec(currentPhase.dry_time) > 0 && toTimeSec(currentPhase.dry_time) <= nowSec);
+    const needWeed = (plant.weed_owners && plant.weed_owners.length > 0) || (toTimeSec(currentPhase.weeds_time) > 0 && toTimeSec(currentPhase.weeds_time) <= nowSec);
+    const needBug = (plant.insect_owners && plant.insect_owners.length > 0) || (toTimeSec(currentPhase.insect_time) > 0 && toTimeSec(currentPhase.insect_time) <= nowSec);
+
+    let status = 'growing';
+    if (phaseVal === PlantPhase.MATURE) status = 'harvestable';
+    else if (phaseVal === PlantPhase.DEAD) status = 'dead';
+    else if (phaseVal === PlantPhase.UNKNOWN || !plant.phases.length) status = 'empty';
+
+    return {
+        plantId,
+        plantName,
+        seedId,
+        seedImage,
+        phaseName,
+        phaseVal,
+        matureInSec,
+        needWater,
+        needWeed,
+        needBug,
+        status,
+        stealable: !!plant.stealable,
+    };
+}
+
 function analyzeLands(lands) {
     const result = {
         harvestable: [], needWater: [], needWeed: [], needBug: [],
@@ -865,17 +1264,22 @@ function analyzeLands(lands) {
 
     const nowSec = getServerTimeSec();
     const debug = isFirstFarmCheck;
+    const landsMap = buildLandMap(lands);
+    const slaveToMasterMap = buildSlaveToMasterMap(lands);
 
     for (const land of lands) {
         const id = toNum(land.id);
-        if (!land.unlocked) {
-            if (land.could_unlock) {
-                result.unlockable.push(id);
-            }
+        const basic = getLandBasicInfo(land);
+        
+        if (!basic.unlocked) {
+            if (basic.couldUnlock) result.unlockable.push(id);
             continue;
         }
-        if (land.could_upgrade) {
-            result.upgradable.push(id);
+        if (basic.couldUpgrade) result.upgradable.push(id);
+
+        // 跳过被主地块占用的副地块
+        if (isOccupiedSlaveLand(land, landsMap, slaveToMasterMap)) {
+            continue;
         }
 
         const plant = land.plant;
@@ -921,15 +1325,11 @@ function analyzeLands(lands) {
 
         const weedsTime = toTimeSec(currentPhase.weeds_time);
         const hasWeeds = (plant.weed_owners && plant.weed_owners.length > 0) || (weedsTime > 0 && weedsTime <= nowSec);
-        if (hasWeeds) {
-            result.needWeed.push(id);
-        }
+        if (hasWeeds) result.needWeed.push(id);
 
         const insectTime = toTimeSec(currentPhase.insect_time);
         const hasBugs = (plant.insect_owners && plant.insect_owners.length > 0) || (insectTime > 0 && insectTime <= nowSec);
-        if (hasBugs) {
-            result.needBug.push(id);
-        }
+        if (hasBugs) result.needBug.push(id);
 
         result.growing.push(id);
     }
@@ -988,46 +1388,42 @@ function classifyHarvestedLandsByMap(landIds, landsMap) {
     return { removable, growing, unknown };
 }
 
-async function resolveRemovableHarvestedLands(harvestedLandIds, harvestReply) {
+async function resolveRemovableHarvestedLands(harvestedLandIds, _harvestReply) {
     const ids = Array.isArray(harvestedLandIds) ? harvestedLandIds.filter(Boolean) : [];
     if (ids.length === 0) {
         return { removable: [], growing: [], fallbackRemoved: 0 };
     }
 
-    const replyMap = buildLandMap(harvestReply && harvestReply.land);
-    const firstPass = classifyHarvestedLandsByMap(ids, replyMap);
-    const removable = [...firstPass.removable];
-    const growing = [...firstPass.growing];
-    let unknown = [...firstPass.unknown];
-    let fallbackRemoved = 0;
+    const removable = [];
+    const growing = [];
 
-    if (unknown.length > 0) {
-        try {
-            const latestLandsReply = await getAllLands();
-            const latestMap = buildLandMap(latestLandsReply && latestLandsReply.lands);
-            const secondPass = classifyHarvestedLandsByMap(unknown, latestMap);
-            removable.push(...secondPass.removable);
-            growing.push(...secondPass.growing);
-            unknown = secondPass.unknown;
-        } catch (e) {
-            logWarn('农场', `收后状态补拉失败: ${e.message}`, {
+    try {
+        const latestLandsReply = await getAllLands();
+        const latestMap = buildLandMap(latestLandsReply && latestLandsReply.lands);
+        const classified = classifyHarvestedLandsByMap(ids, latestMap);
+        removable.push(...classified.removable);
+        growing.push(...classified.growing);
+
+        if (classified.growing.length > 0) {
+            log('农场', `检测到 ${classified.growing.length} 块两季作物仍在生长，跳过铲除`, {
                 module: 'farm',
-                event: '收获后状态补拉',
-                result: 'error',
+                event: '两季作物检测',
+                result: 'ok',
+                growingLands: classified.growing,
             });
         }
-    }
-
-    if (unknown.length > 0) {
-        // 按兼容策略：不可判定时保持旧行为，继续铲除
-        removable.push(...unknown);
-        fallbackRemoved = unknown.length;
+    } catch (e) {
+        logWarn('农场', `收获后刷新土地状态失败: ${e.message}，跳过收获地块的后续处理`, {
+            module: 'farm',
+            event: '收获后状态刷新',
+            result: 'error',
+        });
     }
 
     return {
         removable: [...new Set(removable)],
         growing: [...new Set(growing)],
-        fallbackRemoved,
+        fallbackRemoved: 0,
     };
 }
 
@@ -1040,6 +1436,20 @@ async function checkFarm() {
         // 复用手动操作逻辑
         const result = await runFarmOperation('all');
         isFirstFarmCheck = false;
+
+        // 同步秒收取任务（如果启用）
+        const fastHarvestConfig = getFastHarvestConfig(state.accountId);
+        if (fastHarvestConfig.enabled) {
+            try {
+                const landsReply = await getAllLands();
+                if (landsReply && landsReply.lands) {
+                    await syncFastHarvestTasks(landsReply.lands);
+                }
+            } catch (e) {
+                logWarn('秒收取', `同步秒收任务失败: ${e.message}`);
+            }
+        }
+
         return !!(result && result.hadWork);
     } catch (err) {
         logWarn('巡田', `检查失败: ${err.message}`);
@@ -1080,23 +1490,7 @@ async function runFarmOperation(opType) {
     const actions = [];
     const batchOps = [];
 
-    // 执行除草/虫/水
-    if (opType === 'all' || opType === 'clear') {
-        // 检查是否跳过自己农场的草虫（仅自动模式生效，手动clear不受影响）
-        const skipOwnWeedBug = opType === 'all' && isAutomationOn('skip_own_weed_bug');
-        if (status.needWeed.length > 0 && !skipOwnWeedBug) {
-            batchOps.push(weedOut(status.needWeed).then(() => { actions.push(`除草${status.needWeed.length}`); recordOperation('weed', status.needWeed.length); }).catch(e => logWarn('除草', e.message)));
-        }
-        if (status.needBug.length > 0 && !skipOwnWeedBug) {
-            batchOps.push(insecticide(status.needBug).then(() => { actions.push(`除虫${status.needBug.length}`); recordOperation('bug', status.needBug.length); }).catch(e => logWarn('除虫', e.message)));
-        }
-        if (status.needWater.length > 0) {
-            batchOps.push(waterLand(status.needWater).then(() => { actions.push(`浇水${status.needWater.length}`); recordOperation('water', status.needWater.length); }).catch(e => logWarn('浇水', e.message)));
-        }
-        if (batchOps.length > 0) await Promise.all(batchOps);
-    }
-
-    // 执行收获
+    // 优先执行收获（避免被偷）
     let harvestedLandIds = [];
     let harvestReply = null;
     if (opType === 'all' || opType === 'harvest') {
@@ -1113,10 +1507,19 @@ async function runFarmOperation(opType) {
                 actions.push(`收获${status.harvestable.length}`);
                 recordOperation('harvest', status.harvestable.length);
                 harvestedLandIds = [...status.harvestable];
+                addHarvestCount(status.harvestable.length);
                 networkEvents.emit('farmHarvested', {
                     count: status.harvestable.length,
                     landIds: [...status.harvestable],
                     opType,
+                });
+                
+                const currentCount = getDailyHarvestCount();
+                log('收获', `今日已收获 ${currentCount}/${RADISH_TARGET_COUNT}`, {
+                    module: 'farm',
+                    event: '每日收获进度',
+                    count: currentCount,
+                    target: RADISH_TARGET_COUNT,
                 });
             } catch (e) {
                 logWarn('收获', e.message, {
@@ -1126,6 +1529,22 @@ async function runFarmOperation(opType) {
                 });
             }
         }
+    }
+
+    // 执行除草/虫/水
+    if (opType === 'all' || opType === 'clear') {
+        // 检查是否跳过自己农场的草虫（仅自动模式生效，手动clear不受影响）
+        const skipOwnWeedBug = opType === 'all' && isAutomationOn('skip_own_weed_bug');
+        if (status.needWeed.length > 0 && !skipOwnWeedBug) {
+            batchOps.push(weedOut(status.needWeed).then(() => { actions.push(`除草${status.needWeed.length}`); recordOperation('weed', status.needWeed.length); }).catch(e => logWarn('除草', e.message)));
+        }
+        if (status.needBug.length > 0 && !skipOwnWeedBug) {
+            batchOps.push(insecticide(status.needBug).then(() => { actions.push(`除虫${status.needBug.length}`); recordOperation('bug', status.needBug.length); }).catch(e => logWarn('除虫', e.message)));
+        }
+        if (status.needWater.length > 0) {
+            batchOps.push(waterLand(status.needWater).then(() => { actions.push(`浇水${status.needWater.length}`); recordOperation('water', status.needWater.length); }).catch(e => logWarn('浇水', e.message)));
+        }
+        if (batchOps.length > 0) await Promise.all(batchOps);
     }
 
     // 执行种植
@@ -1208,6 +1627,27 @@ async function runFarmOperation(opType) {
                 logWarn('施肥', `巡田时施肥失败: ${e.message}`);
             }
         }
+
+        if (isAutomationOn('fertilizer_multi_season') && harvestedLandIds.length > 0) {
+            const postHarvest = await resolveRemovableHarvestedLands(harvestedLandIds, harvestReply);
+            if (postHarvest.growing && postHarvest.growing.length > 0) {
+                const multiSeasonTargets = [...new Set(postHarvest.growing.map(v => toNum(v)).filter(Boolean))];
+                if (multiSeasonTargets.length > 0) {
+                    try {
+                        const result = await runFertilizerByConfig(multiSeasonTargets, { reason: 'multi_season' });
+                        if (result.normal > 0 || result.organic > 0) {
+                            actions.push(`多季补肥${result.normal + result.organic}`);
+                        }
+                    } catch (e) {
+                        logWarn('施肥', `多季补肥执行失败: ${e.message}`, {
+                            module: 'farm',
+                            event: '多季补肥',
+                            result: 'error',
+                        });
+                    }
+                }
+            }
+        }
     }
 
     // 日志
@@ -1231,6 +1671,34 @@ function scheduleNextFarmCheck(delayMs = CONFIG.farmCheckInterval) {
     });
 }
 
+/**
+ * 秒收取任务同步循环
+ * 独立运行，确保即使农场检查关闭，秒收取也能工作
+ */
+async function fastHarvestSyncLoop() {
+    if (externalSchedulerMode) return;
+    if (!farmLoopRunning) return;
+
+    const state = getUserState();
+    if (state.gid) {
+        const config = getFastHarvestConfig(state.accountId);
+        if (config.enabled) {
+            try {
+                const landsReply = await getAllLands();
+                if (landsReply && landsReply.lands) {
+                    await syncFastHarvestTasks(landsReply.lands);
+                }
+            } catch (e) {
+                logWarn('秒收取', `同步任务失败: ${e.message}`);
+            }
+        }
+    }
+
+    if (!farmLoopRunning) return;
+    // 每20秒同步一次秒收取任务
+    farmScheduler.setTimeoutTask('fast_harvest_sync_loop', 20000, () => fastHarvestSyncLoop());
+}
+
 function startFarmCheckLoop(options = {}) {
     if (farmLoopRunning) return;
     externalSchedulerMode = !!options.externalScheduler;
@@ -1238,6 +1706,8 @@ function startFarmCheckLoop(options = {}) {
     networkEvents.on('landsChanged', onLandsChangedPush);
     if (!externalSchedulerMode) {
         scheduleNextFarmCheck(2000);
+        // 启动秒收取同步循环
+        farmScheduler.setTimeoutTask('fast_harvest_sync_loop', 5000, () => fastHarvestSyncLoop());
     }
 }
 
@@ -1270,6 +1740,222 @@ function refreshFarmCheckLoop(delayMs = 200) {
     scheduleNextFarmCheck(delayMs);
 }
 
+// ============ 秒收取功能 ============
+
+/**
+ * 生成秒收取任务ID
+ */
+function getFastHarvestTaskId() {
+    fastHarvestTaskIdCounter++;
+    return `fast_harvest_${fastHarvestTaskIdCounter}`;
+}
+
+/**
+ * 执行秒收取任务
+ * 在作物理论成熟时间前提前发起收获请求
+ */
+async function executeFastHarvest(landId, matureTimeSec) {
+    const state = getUserState();
+    if (!state.gid) return;
+
+    const config = getFastHarvestConfig(state.accountId);
+    if (!config.enabled) return;
+
+    const nowSec = getServerTimeSec();
+    const waitTimeMs = (matureTimeSec - nowSec) * 1000 - config.advanceMs;
+
+    // 如果已经过成熟时间（或提前时间已过），立即收获
+    if (waitTimeMs <= 0) {
+        try {
+            await harvest([landId]);
+            log('秒收取', `土地#${landId} 已立即收获`, {
+                module: 'farm',
+                event: '秒收取',
+                result: 'ok',
+                landId,
+                mode: 'immediate',
+            });
+            recordOperation('harvest', 1);
+            addHarvestCount(1);
+        } catch (e) {
+            logWarn('秒收取', `土地#${landId} 立即收获失败: ${e.message}`);
+        }
+        return;
+    }
+
+    // 创建定时任务，在成熟前提前执行
+    const taskId = getFastHarvestTaskId();
+    const waitSec = Math.max(0, waitTimeMs / 1000);
+    log('秒收取', `土地#${landId} 将在 ${waitSec.toFixed(1)} 秒后执行秒收 (提前 ${config.advanceMs}ms)`, {
+        module: 'farm',
+        event: '秒收取调度',
+        landId,
+        waitSec,
+        advanceMs: config.advanceMs,
+    });
+
+    farmScheduler.setTimeoutTask(taskId, waitTimeMs, async () => {
+        try {
+            // 再次检查是否已收获（可能被其他人收走了）
+            const landsReply = await getAllLands();
+            const landsMap = buildLandMap(landsReply.lands);
+            const land = landsMap.get(landId);
+
+            if (!land || !land.plant) {
+                log('秒收取', `土地#${landId} 已为空，跳过`, { module: 'farm', event: '秒收取跳过', landId });
+                return;
+            }
+
+            const currentPhase = getCurrentPhase(land.plant.phases);
+            if (!currentPhase || currentPhase.phase !== PlantPhase.MATURE) {
+                log('秒收取', `土地#${landId} 未成熟，跳过`, { module: 'farm', event: '秒收取跳过', landId });
+                return;
+            }
+
+            await harvest([landId]);
+            log('秒收取', `土地#${landId} 秒收成功`, {
+                module: 'farm',
+                event: '秒收取',
+                result: 'ok',
+                landId,
+                mode: 'scheduled',
+            });
+            recordOperation('harvest', 1);
+            addHarvestCount(1);
+        } catch (e) {
+            logWarn('秒收取', `土地#${landId} 秒收失败: ${e.message}`);
+        }
+    });
+
+    // 记录任务
+    fastHarvestTasks.set(landId, {
+        taskId,
+        matureTime: matureTimeSec,
+        timeoutId: null, // farmScheduler 内部管理
+    });
+}
+
+/**
+ * 同步秒收取任务
+ * 分析当前土地状态，为即将成熟的作物创建秒收任务
+ */
+async function syncFastHarvestTasks(lands) {
+    const state = getUserState();
+    if (!state.gid) return;
+
+    const config = getFastHarvestConfig(state.accountId);
+    if (!config.enabled) {
+        // 如果秒收取被禁用，清除所有待执行任务
+        if (fastHarvestTasks.size > 0) {
+            for (const [landId, taskInfo] of fastHarvestTasks) {
+                farmScheduler.clear(taskInfo.taskId);
+            }
+            fastHarvestTasks.clear();
+        }
+        return;
+    }
+
+    const nowSec = getServerTimeSec();
+    const landsMap = buildLandMap(lands);
+
+    // 清理已过期的任务
+    for (const [landId, taskInfo] of fastHarvestTasks) {
+        const land = landsMap.get(landId);
+        if (!land || !land.plant) {
+            // 土地已空，取消任务
+            farmScheduler.clear(taskInfo.taskId);
+            fastHarvestTasks.delete(landId);
+            continue;
+        }
+
+        const currentPhase = getCurrentPhase(land.plant.phases);
+        if (!currentPhase || currentPhase.phase === PlantPhase.MATURE || currentPhase.phase === PlantPhase.DEAD) {
+            // 已成熟或已枯萎，取消任务
+            farmScheduler.clear(taskInfo.taskId);
+            fastHarvestTasks.delete(landId);
+        }
+    }
+
+    // 为新的即将成熟的作物创建任务
+    // 先构建 slaveToMasterMap 一次，避免循环内重复构建
+    const slaveToMasterMap = buildSlaveToMasterMap(lands);
+
+    for (const land of lands) {
+        const landId = toNum(land.id);
+        if (!landId || !land.unlocked) continue;
+
+        // 跳过被主地块占用的副地块
+        if (isOccupiedSlaveLand(land, landsMap, slaveToMasterMap)) continue;
+
+        const plant = land.plant;
+        if (!plant || !plant.phases || plant.phases.length === 0) continue;
+
+        const currentPhase = getCurrentPhase(plant.phases);
+        if (!currentPhase) continue;
+        if (currentPhase.phase === PlantPhase.DEAD) continue;
+        if (currentPhase.phase === PlantPhase.MATURE) continue;
+
+        // 查找成熟阶段
+        const maturePhase = plant.phases.find(p => toNum(p.phase) === PlantPhase.MATURE);
+        if (!maturePhase) continue;
+
+        const matureBeginTime = toTimeSec(maturePhase.begin_time);
+        if (matureBeginTime <= 0) continue;
+
+        const timeToMature = matureBeginTime - nowSec;
+
+        // 获取配置，检查 advanceMs 是否合理
+        const config = getFastHarvestConfig(state.accountId);
+        const advanceSec = (config.advanceMs || 0) / 1000;
+
+        // 只处理在秒收时间窗口内的作物
+        // 时间窗口需要大于提前收获时间，否则提前收获不会生效
+        const effectiveWindow = Math.max(FAST_HARVEST_WINDOW_SEC, advanceSec + 60);
+
+        if (timeToMature <= effectiveWindow && timeToMature > 0) {
+            // 检查是否已有任务
+            if (fastHarvestTasks.has(landId)) {
+                const existingTask = fastHarvestTasks.get(landId);
+                // 如果成熟时间变化超过5秒，重新调度
+                if (Math.abs(existingTask.matureTime - matureBeginTime) > 5) {
+                    farmScheduler.clear(existingTask.taskId);
+                    fastHarvestTasks.delete(landId);
+                    await executeFastHarvest(landId, matureBeginTime);
+                }
+            } else {
+                await executeFastHarvest(landId, matureBeginTime);
+            }
+        }
+    }
+}
+
+/**
+ * 获取当前活跃的秒收取任务列表
+ */
+function getActiveFastHarvestTasks() {
+    const tasks = [];
+    const nowSec = getServerTimeSec();
+    for (const [landId, taskInfo] of fastHarvestTasks) {
+        tasks.push({
+            landId,
+            matureTime: taskInfo.matureTime,
+            waitSeconds: Math.max(0, taskInfo.matureTime - nowSec),
+        });
+    }
+    return tasks.sort((a, b) => a.matureTime - b.matureTime);
+}
+
+/**
+ * 清除所有秒收取任务
+ */
+function clearAllFastHarvestTasks() {
+    for (const [landId, taskInfo] of fastHarvestTasks) {
+        farmScheduler.clear(taskInfo.taskId);
+    }
+    fastHarvestTasks.clear();
+    log('秒收取', '已清除所有秒收任务', { module: 'farm', event: '秒收取清除' });
+}
+
 module.exports = {
     checkFarm, startFarmCheckLoop, stopFarmCheckLoop,
     refreshFarmCheckLoop,
@@ -1280,4 +1966,15 @@ module.exports = {
     getAvailableSeeds,
     runFarmOperation, // 导出新函数
     runFertilizerByConfig,
+    buildLandMap,
+    buildSlaveToMasterMap,
+    getDisplayLandContext,
+    isOccupiedSlaveLand,
+    loadDailyHarvestState,
+    getDailyHarvestCount,
+    addHarvestCount,
+    // 秒收取功能导出
+    syncFastHarvestTasks,
+    getActiveFastHarvestTasks,
+    clearAllFastHarvestTasks,
 };

@@ -7,13 +7,18 @@ export interface AutomationConfig {
   farm_push?: boolean
   land_upgrade?: boolean
   friend?: boolean
-  task?: boolean
+  task_plant?: boolean
+  task_plant_first_harvest_radish?: boolean
+  event_plant?: boolean
   sell?: boolean
   fertilizer?: string
   friend_steal?: boolean
   friend_help?: boolean
   friend_bad?: boolean
   open_server_gift?: boolean
+  // 秒收取和蹲守偷菜
+  fast_harvest?: boolean
+  stakeout_steal?: boolean
 }
 
 export interface IntervalsConfig {
@@ -48,6 +53,12 @@ export interface UIConfig {
   theme?: string
 }
 
+export interface StakeoutStealConfig {
+  enabled?: boolean
+  delaySec?: number
+  maxAheadSec?: number
+}
+
 export interface SettingsState {
   plantingStrategy: string
   preferredSeedId: number
@@ -59,6 +70,11 @@ export interface SettingsState {
   stealDelaySeconds: number
   plantOrderRandom: boolean
   plantDelaySeconds: number
+  // 秒收取配置
+  fastHarvestAdvanceMs: number
+  // 蹲守偷菜配置
+  stakeoutSteal: StakeoutStealConfig
+  stakeoutFriendList: number[]
 }
 
 export const useSettingStore = defineStore('setting', () => {
@@ -80,6 +96,15 @@ export const useSettingStore = defineStore('setting', () => {
     stealDelaySeconds: 0,
     plantOrderRandom: false,
     plantDelaySeconds: 0,
+    // 秒收取默认配置
+    fastHarvestAdvanceMs: 200,
+    // 蹲守偷菜默认配置
+    stakeoutSteal: {
+      enabled: false,
+      delaySec: 3,
+      maxAheadSec: 4 * 3600,
+    },
+    stakeoutFriendList: [],
   })
   const loading = ref(false)
 
@@ -110,6 +135,15 @@ export const useSettingStore = defineStore('setting', () => {
         settings.value.stealDelaySeconds = d.stealDelaySeconds ?? 0
         settings.value.plantOrderRandom = d.plantOrderRandom ?? false
         settings.value.plantDelaySeconds = d.plantDelaySeconds ?? 0
+        // 秒收取配置
+        settings.value.fastHarvestAdvanceMs = d.fastHarvestAdvanceMs ?? 200
+        // 蹲守偷菜配置
+        settings.value.stakeoutSteal = d.stakeoutSteal || {
+          enabled: false,
+          delaySec: 3,
+          maxAheadSec: 4 * 3600,
+        }
+        settings.value.stakeoutFriendList = d.stakeoutFriendList || []
       }
     }
     finally {
@@ -130,6 +164,15 @@ export const useSettingStore = defineStore('setting', () => {
         stealDelaySeconds: newSettings.stealDelaySeconds ?? 0,
         plantOrderRandom: newSettings.plantOrderRandom ?? false,
         plantDelaySeconds: newSettings.plantDelaySeconds ?? 0,
+        // 秒收取配置
+        fastHarvestAdvanceMs: newSettings.fastHarvestAdvanceMs ?? 200,
+        // 蹲守偷菜配置
+        stakeoutSteal: newSettings.stakeoutSteal || {
+          enabled: false,
+          delaySec: 3,
+          maxAheadSec: 4 * 3600,
+        },
+        stakeoutFriendList: newSettings.stakeoutFriendList || [],
       }
 
       await api.post('/api/settings/save', settingsPayload, {

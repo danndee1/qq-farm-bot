@@ -4024,5 +4024,284 @@
         "all_state_spine": "spine/v2/xiyouzhongzi/xiyouzhongzi",
         "mature_effect": "effect/prefab/effect_plant_maturation",
         "rare_plant_light_pos": "{\"x\":113,\"y\":125,\"rotation\":0,\"scale\":{\"x\":1,\"y\":1}}"
+    },
+    {
+        "id": 1020112,
+        "name": "风信子",
+        "mutant": "6:1040112:10",
+        "fruit": {
+            "id": 40112,
+            "count": 24
+        },
+        "seed_id": 20112,
+        "land_level_need": 200,
+        "seasons": 2,
+        "grow_phases": "种子:4800;发芽:4800;小叶子:4800;大叶子:7200;初熟:7200;成熟:0;",
+        "exp": 720,
+        "size": 0,
+        "offsetPosition": {
+            "x": 0,
+            "y": 0
+        },
+        "mutantEffectScale": {
+            "x": 1,
+            "y": 1
+        },
+        "harvestOffsetPosition": {
+            "x": -35,
+            "y": 40
+        },
+        "harvestRandom": false,
+        "harvestAllSpineRes": "",
+        "harvestAllOffsetPosition": "",
+        "all_state_spine": "",
+        "mature_effect": "effect/prefab/effect_plant_maturation",
+        "mature_effect_offset": {
+            "x": 0,
+            "y": 0
+        },
+        "rare_plant_light_pos": "",
+        "exp_root": 1.6,
+        "exp_alter": 425,
+        "fruit_root": 2,
+        "fruit_alter": 18
+    },
+    {
+        "id": 1020025,
+        "name": "银杏树苗",
+        "mutant": "6:1040025:10",
+        "fruit": {
+            "id": 40025,
+            "count": 24
+        },
+        "seed_id": 20025,
+        "land_level_need": 200,
+        "seasons": 2,
+        "grow_phases": "种子:4800;发芽:4800;小叶子:4800;大叶子:7200;长枝:7200;成苗:0;",
+        "exp": 720,
+        "size": 0,
+        "offsetPosition": {
+            "x": 0,
+            "y": 0
+        },
+        "mutantEffectScale": {
+            "x": 1,
+            "y": 1
+        },
+        "harvestOffsetPosition": {
+            "x": -35,
+            "y": 40
+        },
+        "harvestRandom": false,
+        "harvestAllSpineRes": "",
+        "harvestAllOffsetPosition": "",
+        "all_state_spine": "",
+        "mature_effect": "effect/prefab/effect_plant_maturation",
+        "mature_effect_offset": {
+            "x": 0,
+            "y": 0
+        },
+        "rare_plant_light_pos": "",
+        "exp_root": 1.6,
+        "exp_alter": 425,
+        "fruit_root": 2,
+        "fruit_alter": 18
+    },
+    {
+        "id": 1020121,
+        "name": "蔷薇",
+        "mutant": "6:1040121:10",
+        "fruit": {
+            "id": 40121,
+            "count": 24
+        },
+        "seed_id": 20121,
+        "land_level_need": 200,
+        "seasons": 2,
+        "grow_phases": "种子:4800;发芽:4800;小叶子:4800;大叶子:7200;初熟:7200;成熟:0;",
+        "exp": 720,
+        "size": 0,
+        "offsetPosition": {
+            "x": 0,
+            "y": 0
+        },
+        "mutantEffectScale": {
+            "x": 1,
+            "y": 1
+        },
+        "harvestOffsetPosition": {
+            "x": -35,
+            "y": 40
+        },
+        "harvestRandom": false,
+        "harvestAllSpineRes": "",
+        "harvestAllOffsetPosition": "",
+        "all_state_spine": "",
+        "mature_effect": "effect/prefab/effect_plant_maturation",
+        "mature_effect_offset": {
+            "x": 0,
+            "y": 0
+        },
+        "rare_plant_light_pos": "",
+        "exp_root": 1.6,
+        "exp_alter": 425,
+        "fruit_root": 2,
+        "fruit_alter": 18
+    },
+    {
+        "id": 1020109,
+        "name": "蝴蝶兰",
+        "mutant": "6:1040109:10",
+        "fruit": {
+            "id": 40109,
+            "count": 24
+        },
+        "seed_id": 20109,
+        "land_level_need": 200,
+        "seasons": 2,
+        "grow_phases": "种子:4800;发芽:4800;小叶子:4800;大叶子:7200;花蕾:7200;盛开:0;",
+        "exp": 720,
+        "size": 0,
+        "offsetPosition": {
+            "x": 0,
+            "y": 0
+        },
+        "mutantEffectScale": {
+            "x": 1,
+            "y": 1
+        },
+        "harvestOffsetPosition": {
+            "x": -35,
+            "y": 40
+        },
+        "harvestRandom": false,
+        "harvestAllSpineRes": "",
+        "harvestAllOffsetPosition": "",
+        "all_state_spine": "",
+        "mature_effect": "effect/prefab/effect_plant_maturation",
+        "mature_effect_offset": {
+            "x": 0,
+            "y": 0
+        },
+        "rare_plant_light_pos": "",
+        "exp_root": 1.6,
+        "exp_alter": 425,
+        "fruit_root": 2,
+        "fruit_alter": 18
+    },
+    {
+        "id": 1020224,
+        "name": "昙花",
+        "mutant": "6:1040224:10",
+        "fruit": {
+            "id": 40224,
+            "count": 24
+        },
+        "seed_id": 20224,
+        "land_level_need": 201,
+        "seasons": 2,
+        "grow_phases": "种子:4800;发芽:4800;小叶子:4800;大叶子:7200;初熟:7200;成熟:0;",
+        "exp": 840,
+        "size": 0,
+        "offsetPosition": {
+            "x": 0,
+            "y": 0
+        },
+        "mutantEffectScale": {
+            "x": 1,
+            "y": 1
+        },
+        "harvestOffsetPosition": {
+            "x": -35,
+            "y": 40
+        },
+        "harvestRandom": false,
+        "harvestAllSpineRes": "",
+        "harvestAllOffsetPosition": "",
+        "all_state_spine": "",
+        "mature_effect": "effect/prefab/effect_plant_maturation",
+        "mature_effect_offset": {
+            "x": 0,
+            "y": 0
+        },
+        "rare_plant_light_pos": "",
+        "exp_root": 1.6,
+        "exp_alter": 496,
+        "fruit_root": 2,
+        "fruit_alter": 18
+    },
+    {
+        "id": 1020249,
+        "name": "荷包牡丹",
+        "mutant": "6:1040249:10",
+        "fruit": {
+            "id": 40249,
+            "count": 24
+        },
+        "seed_id": 20249,
+        "land_level_need": 201,
+        "seasons": 2,
+        "grow_phases": "种子:4800;发芽:4800;小叶子:4800;大叶子:7200;花蕾:7200;盛开:0;",
+        "exp": 840,
+        "size": 0,
+        "offsetPosition": {
+            "x": 0,
+            "y": 0
+        },
+        "mutantEffectScale": {
+            "x": 1,
+            "y": 1
+        },
+        "harvestOffsetPosition": {
+            "x": -35,
+            "y": 40
+        },
+        "harvestRandom": false,
+        "harvestAllSpineRes": "",
+        "harvestAllOffsetPosition": "",
+        "all_state_spine": "",
+        "mature_effect": "effect/prefab/effect_plant_maturation",
+        "mature_effect_offset": {
+            "x": 0,
+            "y": 0
+        },
+        "rare_plant_light_pos": "",
+        "exp_root": 1.6,
+        "exp_alter": 496,
+        "fruit_root": 2,
+        "fruit_alter": 18
+    },
+    {
+        "id": 1020046,
+        "name": "爱心果",
+        "mutant": "6:1040046:10",
+        "fruit": {
+            "id": 40046,
+            "count": 96
+        },
+        "seed_id": 20046,
+        "land_level_need": 202,
+        "seasons": 2,
+        "grow_phases": "种子:4800;发芽:4800;小叶子:4800;大叶子:7200;初熟:7200;成熟:0;",
+        "exp": 3840,
+        "size": 2,
+        "offsetPosition": {
+            "x": 85,
+            "y": 0
+        },
+        "mutantEffectScale": {
+            "x": 1.75,
+            "y": 1.5
+        },
+        "harvestOffsetPosition": {
+            "x": 0,
+            "y": 0
+        },
+        "harvestRandom": true,
+        "harvestAllSpineRes": "spine/v2/shouge/Crop_sg_final",
+        "harvestAllOffsetPosition": "5:30;50:-30;150:-75;200:-25;150:-30",
+        "all_state_spine": "spine/v2/xiyouzhongzi/1020046",
+        "mature_effect": "effect/prefab/effect_plant_maturation",
+        "rare_plant_light_pos": "{\"x\":113,\"y\":125,\"rotation\":0,\"scale\":{\"x\":1,\"y\":1}}"
     }
 ]

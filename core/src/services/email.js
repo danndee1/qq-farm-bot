@@ -4,28 +4,11 @@
 
 const { sendMsgAsync } = require('../utils/network');
 const { types } = require('../utils/proto');
-const { log, toNum } = require('../utils/utils');
+const { log } = require('../utils/utils');
+const { getRewardSummary, DailyStateManager, COOLDOWN_MS } = require('../utils/common');
 
 const DAILY_KEY = 'email_rewards';
-let doneDateKey = '';
-let lastCheckAt = 0;
-const CHECK_COOLDOWN_MS = 5 * 60 * 1000;
-
-function getDateKey() {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-}
-
-function markDoneToday() {
-    doneDateKey = getDateKey();
-}
-
-function isDoneToday() {
-    return doneDateKey === getDateKey();
-}
+const state = new DailyStateManager(DAILY_KEY, COOLDOWN_MS.SHORT);
 
 async function getEmailList(boxType = 1) {
     const body = types.GetEmailListRequest.encode(types.GetEmailListRequest.create({
@@ -63,26 +46,8 @@ function normalizeBoxType(v) {
     return (n === 1 || n === 2) ? n : 1;
 }
 
-function getRewardSummary(items) {
-    const list = Array.isArray(items) ? items : [];
-    const summary = [];
-    for (const it of list) {
-        const id = toNum(it.id);
-        const count = toNum(it.count);
-        if (count <= 0) continue;
-        if (id === 1 || id === 1001) summary.push(`金币${count}`);
-        else if (id === 2 || id === 1101) summary.push(`经验${count}`);
-        else if (id === 1002) summary.push(`点券${count}`);
-        else summary.push(`物品#${id}x${count}`);
-    }
-    return summary.join('/');
-}
-
 async function checkAndClaimEmails(force = false) {
-    const now = Date.now();
-    if (!force && isDoneToday()) return { claimed: 0, rewardItems: 0 };
-    if (!force && now - lastCheckAt < CHECK_COOLDOWN_MS) return { claimed: 0, rewardItems: 0 };
-    lastCheckAt = now;
+    if (!state.prepareCheck(force)) return { claimed: 0, rewardItems: 0 };
 
     try {
         const [box1, box2] = await Promise.all([
@@ -95,7 +60,6 @@ async function checkAndClaimEmails(force = false) {
         const fromBox2 = (box2.emails || []).map((x) => ({ ...x, __boxType: 2 }));
         for (const x of [...fromBox1, ...fromBox2]) {
             if (!x || !x.id) continue;
-            // 优先保留“有奖励且未领取”的版本
             if (!merged.has(x.id)) {
                 merged.set(x.id, x);
                 continue;
@@ -108,7 +72,7 @@ async function checkAndClaimEmails(force = false) {
 
         const claimable = collectClaimableEmails({ emails: [...merged.values()] });
         if (claimable.length === 0) {
-            markDoneToday();
+            state.markDone();
             log('邮箱', '今日暂无可领取邮箱奖励', {
                 module: 'task',
                 event: DAILY_KEY,
@@ -120,7 +84,6 @@ async function checkAndClaimEmails(force = false) {
         const rewards = [];
         let claimed = 0;
 
-        // 先按邮箱类型尝试批量领取，失败则继续单领
         const byBox = new Map();
         for (const m of claimable) {
             const boxType = normalizeBoxType(m && m.__boxType);
@@ -138,7 +101,6 @@ async function checkAndClaimEmails(force = false) {
                     claimed += 1;
                 }
             } catch {
-                // 批量失败静默，继续单领
             }
         }
 
@@ -151,7 +113,6 @@ async function checkAndClaimEmails(force = false) {
                 }
                 claimed += 1;
             } catch {
-                // 单封失败静默
             }
         }
 
@@ -163,7 +124,7 @@ async function checkAndClaimEmails(force = false) {
                 result: 'ok',
                 count: claimed,
             });
-            markDoneToday();
+            state.markDone();
         }
 
         return { claimed, rewardItems: rewards.length };
@@ -184,7 +145,7 @@ module.exports = {
     checkAndClaimEmails,
     getEmailDailyState: () => ({
         key: DAILY_KEY,
-        doneToday: isDoneToday(),
-        lastCheckAt,
+        doneToday: state.isDone(),
+        lastCheckAt: state.lastCheckAt,
     }),
 };

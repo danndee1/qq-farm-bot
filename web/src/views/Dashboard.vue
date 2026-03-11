@@ -177,6 +177,7 @@ const fertilizerNormal = computed(() => dashboardItems.value.find((i: any) => Nu
 const fertilizerOrganic = computed(() => dashboardItems.value.find((i: any) => Number(i.id) === 1012))
 const collectionNormal = computed(() => dashboardItems.value.find((i: any) => Number(i.id) === 3001))
 const collectionRare = computed(() => dashboardItems.value.find((i: any) => Number(i.id) === 3002))
+const goldBean = computed(() => dashboardItems.value.find((i: any) => Number(i.id) === 1005))
 
 function formatBucketTime(item: any) {
   if (!item)
@@ -242,20 +243,20 @@ function formatLogTime(timeStr: string) {
 }
 
 const OP_META: Record<string, { label: string, icon: string, color: string }> = {
-  harvest: { label: '收获', icon: 'i-carbon-crop-growth', color: 'text-green-500' },
-  water: { label: '浇水', icon: 'i-carbon-rain-drop', color: 'text-blue-400' },
-  weed: { label: '除草', icon: 'i-carbon-cut-out', color: 'text-yellow-500' },
-  bug: { label: '除虫', icon: 'i-carbon-warning-alt', color: 'text-red-400' },
-  fertilize: { label: '施肥', icon: 'i-carbon-chemistry', color: 'text-emerald-500' },
-  plant: { label: '种植', icon: 'i-carbon-tree', color: 'text-lime-500' },
-  upgrade: { label: '土地升级', icon: 'i-carbon-upgrade', color: 'text-purple-500' },
-  levelUp: { label: '账号升级', icon: 'i-carbon-user-certification', color: 'text-indigo-500' },
-  steal: { label: '偷菜', icon: 'i-carbon-run', color: 'text-orange-500' },
-  helpWater: { label: '帮浇水', icon: 'i-carbon-rain-drop', color: 'text-blue-300' },
-  helpWeed: { label: '帮除草', icon: 'i-carbon-cut-out', color: 'text-yellow-400' },
-  helpBug: { label: '帮除虫', icon: 'i-carbon-warning-alt', color: 'text-red-300' },
-  taskClaim: { label: '任务', icon: 'i-carbon-task-complete', color: 'text-indigo-500' },
-  sell: { label: '出售', icon: 'i-carbon-shopping-cart', color: 'text-pink-500' },
+  harvest: { label: '收获', icon: '🌾', color: 'text-green-500' },
+  water: { label: '浇水', icon: '💧', color: 'text-blue-400' },
+  weed: { label: '除草', icon: '✂️', color: 'text-yellow-500' },
+  bug: { label: '除虫', icon: '🐛', color: 'text-red-400' },
+  fertilize: { label: '施肥', icon: '🧪', color: 'text-emerald-500' },
+  plant: { label: '种植', icon: '🌱', color: 'text-lime-500' },
+  upgrade: { label: '土地升级', icon: '⬆️', color: 'text-purple-500' },
+  levelUp: { label: '账号升级', icon: '📈', color: 'text-indigo-500' },
+  steal: { label: '偷菜', icon: '👀', color: 'text-orange-500' },
+  helpWater: { label: '帮浇水', icon: '💧', color: 'text-blue-300' },
+  helpWeed: { label: '帮除草', icon: '✂️', color: 'text-yellow-400' },
+  helpBug: { label: '帮除虫', icon: '🐛', color: 'text-red-300' },
+  taskClaim: { label: '任务', icon: '✅', color: 'text-indigo-500' },
+  sell: { label: '出售', icon: '🛒', color: 'text-pink-500' },
 }
 
 function getOpName(key: string | number) {
@@ -263,7 +264,7 @@ function getOpName(key: string | number) {
 }
 
 function getOpIcon(key: string | number) {
-  return OP_META[String(key)]?.icon || 'i-carbon-circle-dash'
+  return OP_META[String(key)]?.icon || '⭕'
 }
 
 function getOpColor(key: string | number) {
@@ -414,7 +415,7 @@ useIntervalFn(updateUptime, 1000)
       <div class="flex flex-col rounded-lg bg-white p-4 shadow dark:bg-gray-800">
         <div class="mb-2 flex items-start justify-between">
           <div class="flex items-center gap-1.5 text-sm text-gray-500">
-            <div class="i-fas-user-circle" />
+            <div>👤</div>
             账号
           </div>
           <div class="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
@@ -429,7 +430,9 @@ useIntervalFn(updateUptime, 1000)
         <div class="mt-auto">
           <div class="mb-1 flex justify-between text-xs text-gray-500">
             <div class="flex items-center gap-1">
-              <div class="i-fas-bolt text-blue-400" />
+              <div class="text-blue-400">
+                ⚡
+              </div>
               <span>EXP</span>
             </div>
             <span>{{ status?.levelProgress?.current || 0 }} / {{ status?.levelProgress?.needed || '?' }}</span>
@@ -449,10 +452,12 @@ useIntervalFn(updateUptime, 1000)
 
       <!-- Assets & Status -->
       <div class="flex flex-col justify-between rounded-lg bg-white p-4 shadow dark:bg-gray-800">
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-4">
           <div>
             <div class="flex items-center gap-1.5 text-xs text-gray-500">
-              <div class="i-fas-coins text-yellow-500" />
+              <div class="text-yellow-500">
+                💰
+              </div>
               金币
             </div>
             <div class="text-2xl text-yellow-600 font-bold dark:text-yellow-500">
@@ -468,7 +473,9 @@ useIntervalFn(updateUptime, 1000)
           </div>
           <div class="text-right">
             <div class="flex items-center justify-end gap-1.5 text-xs text-gray-500">
-              <div class="i-fas-ticket-alt text-emerald-400" />
+              <div class="text-emerald-400">
+                🎫
+              </div>
               点券
             </div>
             <div class="text-2xl text-emerald-500 font-bold dark:text-emerald-400">
@@ -482,6 +489,17 @@ useIntervalFn(updateUptime, 1000)
               {{ (status?.sessionCouponGained || 0) > 0 ? '+' : '' }}{{ status?.sessionCouponGained || 0 }}
             </div>
           </div>
+          <div class="text-right">
+            <div class="flex items-center justify-end gap-1.5 text-xs text-gray-500">
+              <div class="text-amber-500">
+                🌱
+              </div>
+              金豆豆
+            </div>
+            <div class="text-2xl text-amber-500 font-bold dark:text-amber-400">
+              {{ goldBean?.count || 0 }}
+            </div>
+          </div>
         </div>
         <div class="mt-4 border-t border-gray-100 pt-3 dark:border-gray-700">
           <div class="flex items-center justify-between">
@@ -490,7 +508,9 @@ useIntervalFn(updateUptime, 1000)
               <span class="text-xs font-bold">{{ status?.connection?.connected ? '在线' : '离线' }}</span>
             </div>
             <div class="flex items-center gap-1.5 text-xs text-gray-400">
-              <div class="i-fas-clock text-purple-400" />
+              <div class="text-purple-400">
+                🕒
+              </div>
               {{ formatDuration(localUptime) }}
             </div>
           </div>
@@ -500,13 +520,17 @@ useIntervalFn(updateUptime, 1000)
       <!-- Items (Fertilizer & Collection) -->
       <div class="flex flex-col justify-between rounded-lg bg-white p-4 shadow dark:bg-gray-800">
         <div class="mb-2 flex items-center gap-1.5 text-sm text-gray-500">
-          <div class="i-fas-flask text-emerald-400" />
+          <div class="text-emerald-400">
+            🧪
+          </div>
           化肥容器
         </div>
         <div class="grid grid-cols-2 gap-2">
           <div>
             <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-flask text-emerald-400" />
+              <div class="text-emerald-400">
+                🧪
+              </div>
               普通
             </div>
             <div class="font-bold">
@@ -515,7 +539,9 @@ useIntervalFn(updateUptime, 1000)
           </div>
           <div>
             <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-vial text-emerald-400" />
+              <div class="text-emerald-400">
+                💊
+              </div>
               有机
             </div>
             <div class="font-bold">
@@ -525,13 +551,17 @@ useIntervalFn(updateUptime, 1000)
         </div>
         <div class="my-2 border-t border-gray-100 dark:border-gray-700" />
         <div class="mb-1 flex items-center gap-1.5 text-sm text-gray-500">
-          <div class="i-fas-star text-emerald-400" />
+          <div class="text-emerald-400">
+            ⭐
+          </div>
           收藏点
         </div>
         <div class="grid grid-cols-2 gap-2">
           <div>
             <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-bookmark text-emerald-400" />
+              <div class="text-emerald-400">
+                🔖
+              </div>
               普通
             </div>
             <div class="font-bold">
@@ -540,7 +570,9 @@ useIntervalFn(updateUptime, 1000)
           </div>
           <div>
             <div class="flex items-center gap-1 text-xs text-gray-400">
-              <div class="i-fas-gem text-emerald-400" />
+              <div class="text-emerald-400">
+                💎
+              </div>
               典藏
             </div>
             <div class="font-bold">
@@ -559,7 +591,7 @@ useIntervalFn(updateUptime, 1000)
         <div class="flex flex-1 flex-col rounded-lg bg-white p-6 shadow md:overflow-hidden dark:bg-gray-800">
           <div class="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <h3 class="flex items-center gap-2 text-lg font-medium">
-              <div class="i-carbon-document" />
+              <div>📄</div>
               <span>运行日志</span>
             </h3>
 
@@ -599,7 +631,7 @@ useIntervalFn(updateUptime, 1000)
                 size="sm"
                 @click="onLogSearchTrigger"
               >
-                <div class="i-carbon-search" />
+                <div>🔍</div>
               </BaseButton>
 
               <BaseButton
@@ -608,7 +640,7 @@ useIntervalFn(updateUptime, 1000)
                 :loading="clearingLogs"
                 @click="clearLogs"
               >
-                <div class="i-carbon-trash-can" />
+                <div>🗑️</div>
               </BaseButton>
             </div>
           </div>
@@ -632,11 +664,13 @@ useIntervalFn(updateUptime, 1000)
         <!-- Operations Grid -->
         <div class="flex-1 rounded-lg bg-white p-4 shadow dark:bg-gray-800">
           <h3 class="mb-3 flex items-center gap-2 text-lg font-medium">
-            <div class="i-carbon-chart-column" />
+            <div>📊</div>
             <span>今日统计</span>
           </h3>
           <div v-if="!status?.connection?.connected" class="flex flex-col items-center justify-center gap-4 rounded-lg bg-white p-12 text-center text-gray-500 shadow dark:bg-gray-800">
-            <div class="i-carbon-connection-signal-off text-4xl text-gray-400" />
+            <div class="text-4xl text-gray-400">
+              🔌
+            </div>
             <div class="flex flex-col">
               <div class="text-lg text-gray-700 font-medium dark:text-gray-300">
                 账号未登录
@@ -653,7 +687,9 @@ useIntervalFn(updateUptime, 1000)
               class="flex items-center justify-between rounded bg-gray-50 px-3 py-2 dark:bg-gray-700/30"
             >
               <div class="flex items-center gap-2">
-                <div class="text-base 2xl:text-lg" :class="[getOpIcon(key), getOpColor(key)]" />
+                <div class="text-base 2xl:text-lg" :class="getOpColor(key)">
+                  {{ getOpIcon(key) }}
+                </div>
                 <div class="text-xs text-gray-500 2xl:text-sm">
                   {{ getOpName(key) }}
                 </div>

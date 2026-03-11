@@ -4,47 +4,14 @@
 
 const { sendMsgAsync } = require('../utils/network');
 const { types } = require('../utils/proto');
-const { log, toNum } = require('../utils/utils');
+const { log } = require('../utils/utils');
+const { getRewardSummary, DailyStateManager, COOLDOWN_MS } = require('../utils/common');
 
 const DAILY_KEY = 'open_server_gift';
-const CHECK_COOLDOWN_MS = 10 * 60 * 1000;
+const state = new DailyStateManager(DAILY_KEY, COOLDOWN_MS.DEFAULT);
 
-let doneDateKey = '';
-let lastCheckAt = 0;
-let lastClaimAt = 0;
 let lastResult = '';
 let lastHasClaimable = null;
-
-function getDateKey() {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-}
-
-function markDoneToday() {
-    doneDateKey = getDateKey();
-}
-
-function isDoneToday() {
-    return doneDateKey === getDateKey();
-}
-
-function getRewardSummary(items) {
-    const list = Array.isArray(items) ? items : [];
-    const summary = [];
-    for (const it of list) {
-        const id = toNum(it.id);
-        const count = toNum(it.count);
-        if (count <= 0) continue;
-        if (id === 1 || id === 1001) summary.push(`金币${count}`);
-        else if (id === 2 || id === 1101) summary.push(`经验${count}`);
-        else if (id === 1002) summary.push(`点券${count}`);
-        else summary.push(`物品#${id}x${count}`);
-    }
-    return summary.join('/');
-}
 
 function isAlreadyClaimedError(err) {
     const msg = String((err && err.message) || '');
@@ -66,10 +33,7 @@ async function claimRedPacket(id) {
 }
 
 async function performDailyOpenServerGift(force = false) {
-    const now = Date.now();
-    if (!force && isDoneToday()) return false;
-    if (!force && now - lastCheckAt < CHECK_COOLDOWN_MS) return false;
-    lastCheckAt = now;
+    if (!state.prepareCheck(force)) return false;
 
     try {
         const status = await getTodayClaimStatus();
@@ -78,7 +42,7 @@ async function performDailyOpenServerGift(force = false) {
         lastHasClaimable = claimable.length > 0;
 
         if (!claimable.length) {
-            markDoneToday();
+            state.markDone();
             lastResult = 'none';
             log('开服', '今日暂无可领取开服红包', {
                 module: 'task',
@@ -118,8 +82,8 @@ async function performDailyOpenServerGift(force = false) {
         }
 
         if (claimed > 0 || alreadyDoneToday) {
-            lastClaimAt = Date.now();
-            markDoneToday();
+            state.touchClaim();
+            state.markDone();
             lastResult = 'ok';
             if (alreadyDoneToday && claimed === 0) {
                 log('开服', '今日开服红包已领取', {
@@ -136,7 +100,7 @@ async function performDailyOpenServerGift(force = false) {
         return false;
     } catch (e) {
         if (isAlreadyClaimedError(e)) {
-            markDoneToday();
+            state.markDone();
             lastResult = 'none';
             log('开服', '今日开服红包已领取', {
                 module: 'task',
@@ -159,9 +123,9 @@ module.exports = {
     performDailyOpenServerGift,
     getOpenServerDailyState: () => ({
         key: DAILY_KEY,
-        doneToday: isDoneToday(),
-        lastCheckAt,
-        lastClaimAt,
+        doneToday: state.isDone(),
+        lastCheckAt: state.lastCheckAt,
+        lastClaimAt: state.lastClaimAt,
         result: lastResult,
         hasClaimable: lastHasClaimable,
     }),

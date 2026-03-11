@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { useIntervalFn } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
-import LandCard from '@/components/LandCard.vue'
+import LandGrid from '@/components/LandGrid.vue'
 import { useAccountStore } from '@/stores/account'
 import { useFarmStore } from '@/stores/farm'
 import { useStatusStore } from '@/stores/status'
@@ -22,6 +22,10 @@ const confirmConfig = ref({
   message: '',
   opType: '',
 })
+
+const isConnected = computed(() => status.value?.connection?.connected)
+const showDisconnected = computed(() => !isConnected.value)
+const hasLands = computed(() => lands.value && lands.value.length > 0)
 
 async function executeOperate() {
   if (!currentAccountId.value || !confirmConfig.value.opType)
@@ -65,18 +69,16 @@ const operations = [
 ]
 
 async function refresh() {
-  if (currentAccountId.value) {
-    const acc = currentAccount.value
-    if (!acc)
-      return
+  const acc = currentAccount.value
+  if (!acc || !currentAccountId.value)
+    return
 
-    if (!realtimeConnected.value) {
-      await statusStore.fetchStatus(currentAccountId.value)
-    }
+  if (!realtimeConnected.value) {
+    await statusStore.fetchStatus(currentAccountId.value)
+  }
 
-    if (acc.running && status.value?.connection?.connected) {
-      farmStore.fetchLands(currentAccountId.value)
-    }
+  if (acc.running && isConnected.value) {
+    farmStore.fetchLands(currentAccountId.value)
   }
 }
 
@@ -84,14 +86,15 @@ watch(currentAccountId, () => {
   refresh()
 })
 
-const { pause, resume } = useIntervalFn(() => {
-  if (lands.value) {
-    lands.value = lands.value.map((l: any) =>
-      l.matureInSec > 0 ? { ...l, matureInSec: l.matureInSec - 1 } : l,
-    )
-  }
-}, 1000)
+function updateMatureTime() {
+  if (!lands.value)
+    return
+  lands.value = lands.value.map(l =>
+    l.matureInSec > 0 ? { ...l, matureInSec: l.matureInSec - 1 } : l,
+  )
+}
 
+const { pause, resume } = useIntervalFn(updateMatureTime, 1000)
 const { pause: pauseRefresh, resume: resumeRefresh } = useIntervalFn(refresh, 60000)
 
 onMounted(() => {
@@ -109,7 +112,6 @@ onUnmounted(() => {
 <template>
   <div class="space-y-4">
     <div class="rounded-lg bg-white shadow dark:bg-gray-800">
-      <!-- Header with Title and Actions -->
       <div class="flex flex-col items-center justify-between gap-4 border-b border-gray-100 p-4 sm:flex-row dark:border-gray-700">
         <h3 class="flex items-center gap-2 text-lg font-bold">
           <div class="i-carbon-grid text-xl" />
@@ -130,7 +132,6 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Summary -->
       <div class="flex flex-wrap gap-4 border-b border-gray-100 bg-gray-50 p-4 text-sm dark:border-gray-700 dark:bg-gray-900/50">
         <div class="flex items-center gap-1.5 rounded-full bg-orange-100 px-3 py-1 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
           <div class="i-carbon-clean" />
@@ -150,13 +151,12 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Grid -->
       <div class="p-4">
         <div v-if="loading || statusLoading" class="flex justify-center py-12">
           <div class="i-svg-spinners-90-ring-with-bg text-4xl text-blue-500" />
         </div>
 
-        <div v-else-if="!status?.connection?.connected" class="flex flex-col items-center justify-center gap-4 rounded-lg bg-white p-12 text-center text-gray-500 shadow dark:bg-gray-800">
+        <div v-else-if="showDisconnected" class="flex flex-col items-center justify-center gap-4 rounded-lg bg-white p-12 text-center text-gray-500 shadow dark:bg-gray-800">
           <div class="i-carbon-connection-signal-off text-4xl text-gray-400" />
           <div>
             <div class="text-lg text-gray-700 font-medium dark:text-gray-300">
@@ -168,16 +168,12 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div v-else-if="!lands || lands.length === 0" class="flex justify-center py-12 text-gray-500">
+        <div v-else-if="!hasLands" class="flex justify-center py-12 text-gray-500">
           暂无土地数据
         </div>
 
-        <div v-else class="grid grid-cols-2 gap-4 lg:grid-cols-6 md:grid-cols-4 sm:grid-cols-3">
-          <LandCard
-            v-for="land in lands"
-            :key="land.id"
-            :land="land"
-          />
+        <div v-else class="p-4">
+          <LandGrid :lands="lands" />
         </div>
       </div>
     </div>

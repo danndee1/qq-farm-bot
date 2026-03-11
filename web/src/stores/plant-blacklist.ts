@@ -67,6 +67,32 @@ export const usePlantBlacklistStore = defineStore('plant-blacklist', () => {
     return blacklist.value.includes(seedId)
   }
 
+  async function addAllToBlacklist(seedIds: number[]) {
+    const accountStore = useAccountStore()
+    const accountId = accountStore.currentAccountId
+    if (!accountId)
+      return
+    const res = await api.put('/api/plant-blacklist', { seedIds }, {
+      headers: { 'x-account-id': accountId },
+    })
+    if (res.data.ok) {
+      blacklist.value = res.data.data || []
+    }
+  }
+
+  async function clearBlacklist() {
+    const accountStore = useAccountStore()
+    const accountId = accountStore.currentAccountId
+    if (!accountId)
+      return
+    const res = await api.put('/api/plant-blacklist', { seedIds: [] }, {
+      headers: { 'x-account-id': accountId },
+    })
+    if (res.data.ok) {
+      blacklist.value = res.data.data || []
+    }
+  }
+
   return {
     blacklist,
     loading,
@@ -75,5 +101,7 @@ export const usePlantBlacklistStore = defineStore('plant-blacklist', () => {
     removeFromBlacklist,
     toggleBlacklist,
     isBlacklisted,
+    addAllToBlacklist,
+    clearBlacklist,
   }
 })

@@ -60,7 +60,7 @@ function parseDateTimeLocal(str: string): number | null {
     return null
   const trimmed = str.trim()
   const date = new Date(trimmed)
-  if (isNaN(date.getTime()))
+  if (Number.isNaN(date.getTime()))
     return null
   return date.getTime()
 }

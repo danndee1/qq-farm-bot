@@ -8,7 +8,7 @@ const { readTextFile, readJsonFile, writeJsonFileAtomic } = require('../services
 
 const STORE_FILE = getDataFile('store.json');
 const ACCOUNTS_FILE = getDataFile('accounts.json');
-const ALLOWED_PLANTING_STRATEGIES = ['preferred', 'level', 'max_exp', 'max_fert_exp', 'max_profit', 'max_fert_profit'];
+const ALLOWED_PLANTING_STRATEGIES = ['preferred', 'level', 'max_exp', 'max_fert_exp', 'max_profit', 'max_fert_profit', 'task'];
 const PUSHOO_CHANNELS = new Set([
     'webhook', 'qmsg', 'serverchan', 'pushplus', 'pushplushxtrip',
     'dingtalk', 'wecom', 'bark', 'gocqhttp', 'onebot', 'atri',
@@ -34,15 +34,21 @@ const DEFAULT_ACCOUNT_CONFIG = {
         friend_steal: false,
         friend_help: false,
         friend_bad: false,
-        task: false,
         task_plant: false,
+        task_plant_first_harvest_radish: false,
+        event_plant: false,
         fertilizer_gift: false,
         fertilizer_buy: false,
         sell: false,
         fertilizer: 'none',
         fertilizerBuyType: 'organic',
         fertilizeLandLevel: 1,
+        fertilizer_multi_season: false,
         skip_own_weed_bug: false,
+        // 秒收取：作物成熟瞬间自动收获
+        fast_harvest: false,
+        // 蹲守偷菜：预判好友作物成熟时间提前蹲点
+        stakeout_steal: false,
     },
     plantingStrategy: 'preferred',
     preferredSeedId: 0,
@@ -70,6 +76,18 @@ const DEFAULT_ACCOUNT_CONFIG = {
     plantOrderRandom: false,
     // 自己农田种植时每块地间隔秒数（0=使用默认50ms）
     plantDelaySeconds: 0,
+    // 秒收取提前时间（毫秒），默认提前200ms发起请求
+    fastHarvestAdvanceMs: 200,
+    // 蹲守偷菜配置
+    stakeoutSteal: {
+        enabled: false,
+        // 蹲守延迟秒数（作物成熟后再等几秒偷，避免被检测）
+        delaySec: 3,
+        // 最大提前蹲守时间（秒），默认4小时
+        maxAheadSec: 4 * 3600,
+    },
+    // 蹲守好友列表（指定要蹲守的好友GID列表，为空则蹲守所有好友）
+    stakeoutFriendList: [],
 };
 const ALLOWED_AUTOMATION_KEYS = new Set(Object.keys(DEFAULT_ACCOUNT_CONFIG.automation));
 
@@ -167,6 +185,20 @@ function cloneAccountConfig(base = DEFAULT_ACCOUNT_CONFIG) {
     // 蔬菜黑名单
     const rawPlantBlacklist = Array.isArray(base.plantBlacklist) ? base.plantBlacklist : [];
 
+    // 蹲守好友列表
+    const rawStakeoutFriendList = Array.isArray(base.stakeoutFriendList) ? base.stakeoutFriendList : [];
+
+    // 蹲守配置
+    const srcStakeoutSteal = (base && base.stakeoutSteal && typeof base.stakeoutSteal === 'object')
+        ? base.stakeoutSteal
+        : {};
+    const stakeoutSteal = {
+        ...DEFAULT_ACCOUNT_CONFIG.stakeoutSteal,
+        enabled: srcStakeoutSteal.enabled !== undefined ? !!srcStakeoutSteal.enabled : DEFAULT_ACCOUNT_CONFIG.stakeoutSteal.enabled,
+        delaySec: Math.max(0, Math.min(60, Number(srcStakeoutSteal.delaySec) || DEFAULT_ACCOUNT_CONFIG.stakeoutSteal.delaySec)),
+        maxAheadSec: Math.max(60, Number(srcStakeoutSteal.maxAheadSec) || DEFAULT_ACCOUNT_CONFIG.stakeoutSteal.maxAheadSec),
+    };
+
     return {
         ...base,
         automation,
@@ -181,6 +213,11 @@ function cloneAccountConfig(base = DEFAULT_ACCOUNT_CONFIG) {
         stealDelaySeconds: Math.max(0, Math.min(300, Number(base.stealDelaySeconds) || 0)),
         plantOrderRandom: !!(base.plantOrderRandom),
         plantDelaySeconds: Math.max(0, Math.min(60, Number(base.plantDelaySeconds) || 0)),
+        // 秒收取配置
+        fastHarvestAdvanceMs: Math.max(50, Math.min(1000, Number(base.fastHarvestAdvanceMs) || 200)),
+        // 蹲守配置
+        stakeoutSteal,
+        stakeoutFriendList: rawStakeoutFriendList.map(Number).filter(n => Number.isFinite(n) && n > 0),
     };
 }
 
@@ -262,6 +299,26 @@ function normalizeAccountConfig(input, fallback = accountFallbackConfig) {
     // 种植延迟
     if (src.plantDelaySeconds !== undefined && src.plantDelaySeconds !== null) {
         cfg.plantDelaySeconds = Math.max(0, Math.min(60, Number(src.plantDelaySeconds) || 0));
+    }
+
+    // 秒收取提前时间
+    if (src.fastHarvestAdvanceMs !== undefined && src.fastHarvestAdvanceMs !== null) {
+        cfg.fastHarvestAdvanceMs = Math.max(50, Math.min(1000, Number(src.fastHarvestAdvanceMs) || 200));
+    }
+
+    // 蹲守配置
+    if (src.stakeoutSteal && typeof src.stakeoutSteal === 'object') {
+        cfg.stakeoutSteal = {
+            ...cfg.stakeoutSteal,
+            enabled: src.stakeoutSteal.enabled !== undefined ? !!src.stakeoutSteal.enabled : cfg.stakeoutSteal.enabled,
+            delaySec: Math.max(0, Math.min(60, Number(src.stakeoutSteal.delaySec) || cfg.stakeoutSteal.delaySec)),
+            maxAheadSec: Math.max(60, Number(src.stakeoutSteal.maxAheadSec) || cfg.stakeoutSteal.maxAheadSec),
+        };
+    }
+
+    // 蹲守好友列表
+    if (Array.isArray(src.stakeoutFriendList)) {
+        cfg.stakeoutFriendList = src.stakeoutFriendList.map(Number).filter(n => Number.isFinite(n) && n > 0);
     }
 
     return cfg;
@@ -483,6 +540,11 @@ function getConfigSnapshot(accountId) {
         plantOrderRandom: !!cfg.plantOrderRandom,
         plantDelaySeconds: Math.max(0, Math.min(60, Number(cfg.plantDelaySeconds) || 0)),
         ui: { ...globalConfig.ui },
+        // 秒收取配置
+        fastHarvestAdvanceMs: Math.max(50, Math.min(1000, Number(cfg.fastHarvestAdvanceMs) || 200)),
+        // 蹲守配置
+        stakeoutSteal: { ...(cfg.stakeoutSteal || DEFAULT_ACCOUNT_CONFIG.stakeoutSteal) },
+        stakeoutFriendList: [...(cfg.stakeoutFriendList || [])],
     };
 }
 
@@ -559,6 +621,26 @@ function applyConfigSnapshot(snapshot, options = {}) {
     // 种植延迟
     if (cfg.plantDelaySeconds !== undefined && cfg.plantDelaySeconds !== null) {
         next.plantDelaySeconds = Math.max(0, Math.min(60, Number(cfg.plantDelaySeconds) || 0));
+    }
+
+    // 秒收取提前时间
+    if (cfg.fastHarvestAdvanceMs !== undefined && cfg.fastHarvestAdvanceMs !== null) {
+        next.fastHarvestAdvanceMs = Math.max(50, Math.min(1000, Number(cfg.fastHarvestAdvanceMs) || 200));
+    }
+
+    // 蹲守配置
+    if (cfg.stakeoutSteal && typeof cfg.stakeoutSteal === 'object') {
+        next.stakeoutSteal = {
+            ...next.stakeoutSteal,
+            enabled: cfg.stakeoutSteal.enabled !== undefined ? !!cfg.stakeoutSteal.enabled : next.stakeoutSteal.enabled,
+            delaySec: Math.max(0, Math.min(60, Number(cfg.stakeoutSteal.delaySec) || next.stakeoutSteal.delaySec)),
+            maxAheadSec: Math.max(60, Number(cfg.stakeoutSteal.maxAheadSec) || next.stakeoutSteal.maxAheadSec),
+        };
+    }
+
+    // 蹲守好友列表
+    if (Array.isArray(cfg.stakeoutFriendList)) {
+        next.stakeoutFriendList = cfg.stakeoutFriendList.map(Number).filter(n => Number.isFinite(n) && n > 0);
     }
 
     if (cfg.ui && typeof cfg.ui === 'object') {
@@ -956,4 +1038,28 @@ module.exports = {
     // 管理员微信配置
     getAdminWxConfig,
     setAdminWxConfig,
+    // 秒收取和蹲守配置
+    getFastHarvestConfig: (accountId) => {
+        const cfg = getAccountConfigSnapshot(accountId);
+        return {
+            enabled: !!(cfg.automation && cfg.automation.fast_harvest),
+            advanceMs: Math.max(50, Math.min(1000, Number(cfg.fastHarvestAdvanceMs) || 200)),
+        };
+    },
+    getStakeoutStealConfig: (accountId) => {
+        const cfg = getAccountConfigSnapshot(accountId);
+        return {
+            enabled: !!(cfg.automation && cfg.automation.stakeout_steal),
+            delaySec: Math.max(0, Math.min(60, Number(cfg.stakeoutSteal && cfg.stakeoutSteal.delaySec) || 3)),
+            maxAheadSec: Math.max(60, Number(cfg.stakeoutSteal && cfg.stakeoutSteal.maxAheadSec) || 4 * 3600),
+            friendList: [...(cfg.stakeoutFriendList || [])],
+        };
+    },
+    setStakeoutFriendList: (accountId, list) => {
+        const current = getAccountConfigSnapshot(accountId);
+        const next = cloneAccountConfig(current);
+        next.stakeoutFriendList = Array.isArray(list) ? list.map(Number).filter(n => Number.isFinite(n) && n > 0) : [];
+        setAccountConfigSnapshot(accountId, next);
+        return [...next.stakeoutFriendList];
+    },
 };

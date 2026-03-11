@@ -60,8 +60,9 @@ const localSettings = ref({
   friendQuietHours: { enabled: false, start: '23:00', end: '07:00' },
   automation: {
     farm: false,
-    task: false,
     task_plant: false,
+    task_plant_first_harvest_radish: false,
+    event_plant: false,
     sell: false,
     friend: false,
     farm_push: false,
@@ -75,16 +76,30 @@ const localSettings = ref({
     fertilizer: 'none',
     fertilizerBuyType: 'organic',
     fertilizeLandLevel: 1,
+    fertilizer_multi_season: false,
     skip_own_weed_bug: false,
+    // 秒收取和蹲守偷菜
+    fast_harvest: false,
+    stakeout_steal: false,
   },
+  // 秒收取配置
+  fastHarvestAdvanceMs: 200,
+  // 蹲守偷菜配置
+  stakeoutSteal: {
+    enabled: false,
+    delaySec: 3,
+    maxAheadSec: 4 * 3600,
+  },
+  stakeoutFriendList: [] as number[],
 })
 
 const automationMasterSwitch = ref(false)
 
 const automationBooleanKeys = [
   'farm',
-  'task',
   'task_plant',
+  'task_plant_first_harvest_radish',
+  'event_plant',
   'sell',
   'friend',
   'farm_push',
@@ -96,6 +111,9 @@ const automationBooleanKeys = [
   'fertilizer_gift',
   'fertilizer_buy',
   'skip_own_weed_bug',
+  // 秒收取和蹲守偷菜
+  'fast_harvest',
+  'stakeout_steal',
 ] as const
 
 watch(automationMasterSwitch, (newVal) => {
@@ -138,13 +156,19 @@ function syncLocalSettings() {
       intervals: settings.value.intervals,
       friendQuietHours: settings.value.friendQuietHours,
       automation: settings.value.automation,
+      // 秒收取配置
+      fastHarvestAdvanceMs: settings.value.fastHarvestAdvanceMs ?? 200,
+      // 蹲守偷菜配置
+      stakeoutSteal: settings.value.stakeoutSteal ?? { enabled: false, delaySec: 3, maxAheadSec: 4 * 3600 },
+      stakeoutFriendList: settings.value.stakeoutFriendList ?? [],
     }))
 
     if (!localSettings.value.automation) {
       localSettings.value.automation = {
         farm: false,
-        task: false,
         task_plant: false,
+        task_plant_first_harvest_radish: false,
+        event_plant: false,
         sell: false,
         friend: false,
         farm_push: false,
@@ -158,14 +182,18 @@ function syncLocalSettings() {
         fertilizer: 'none',
         fertilizerBuyType: 'organic',
         fertilizeLandLevel: 1,
+        fertilizer_multi_season: false,
         skip_own_weed_bug: false,
+        fast_harvest: false,
+        stakeout_steal: false,
       }
     }
     else {
       const defaults = {
         farm: false,
-        task: false,
         task_plant: false,
+        task_plant_first_harvest_radish: false,
+        event_plant: false,
         sell: false,
         friend: false,
         farm_push: false,
@@ -179,7 +207,10 @@ function syncLocalSettings() {
         fertilizer: 'none',
         fertilizerBuyType: 'organic',
         fertilizeLandLevel: 1,
+        fertilizer_multi_season: false,
         skip_own_weed_bug: false,
+        fast_harvest: false,
+        stakeout_steal: false,
       }
       localSettings.value.automation = {
         ...defaults,
@@ -275,6 +306,7 @@ const plantingStrategyOptions = [
   { label: '最大普通肥经验/时', value: 'max_fert_exp' },
   { label: '最大净利润/时', value: 'max_profit' },
   { label: '最大普通肥净利润/时', value: 'max_fert_profit' },
+  { label: '任务种植', value: 'task' },
 ]
 
 const channelOptions = [
@@ -376,8 +408,8 @@ watchEffect(async () => {
     return
   }
   if (strategy === 'level') {
-    const best = [...available].sort((a, b) => b.requiredLevel - a.requiredLevel)[0]
-    strategyPreviewLabel.value = best ? `${best.requiredLevel}级 ${best.name}` : null
+    const best = [...available].sort((a, b) => (b.requiredLevel ?? 0) - (a.requiredLevel ?? 0))[0]
+    strategyPreviewLabel.value = best ? `${best.requiredLevel ?? 0}级 ${best.name}` : null
     return
   }
   const sortBy = analyticsSortByMap[strategy]
@@ -638,8 +670,9 @@ async function handleTestOffline() {
 
           <div class="grid grid-cols-2 gap-3 md:grid-cols-3">
             <BaseSwitch v-model="localSettings.automation.farm" label="自动种植收获" />
-            <BaseSwitch v-model="localSettings.automation.task" label="自动做任务" />
-            <BaseSwitch v-model="localSettings.automation.task_plant" label="按照任务种值" />
+            <BaseSwitch v-model="localSettings.automation.task_plant" label="按照任务种植" />
+            <BaseSwitch v-model="localSettings.automation.task_plant_first_harvest_radish" label="每日萝卜600经验" />
+            <BaseSwitch v-model="localSettings.automation.event_plant" label="活动种植" />
             <BaseSwitch v-model="localSettings.automation.sell" label="自动卖果实" />
             <BaseSwitch v-model="localSettings.automation.friend" label="自动好友互动" />
             <BaseSwitch v-model="localSettings.automation.farm_push" label="推送触发巡田" />
@@ -678,6 +711,66 @@ async function handleTestOffline() {
               class="w-full"
               :options="fertilizeLandLevelOptions"
             />
+          </div>
+
+          <div class="flex flex-wrap items-center gap-4 rounded bg-amber-50 p-3 dark:bg-amber-900/20">
+            <BaseSwitch v-model="localSettings.automation.fertilizer_multi_season" label="多季补肥" />
+            <span class="text-xs text-gray-500 dark:text-gray-400">收获多季作物后自动为仍在生长的地块施肥</span>
+          </div>
+
+          <!-- 秒收取配置 -->
+          <div class="border-t pt-4 space-y-3 dark:border-gray-700">
+            <h4 class="text-sm text-gray-700 font-medium dark:text-gray-300">
+              秒收取设置
+            </h4>
+            <div class="flex flex-wrap items-center gap-4 rounded bg-green-50 p-3 dark:bg-green-900/20">
+              <BaseSwitch v-model="localSettings.automation.fast_harvest" label="启用秒收取" />
+              <span class="text-xs text-gray-500 dark:text-gray-400">作物成熟前提前发起收获请求，减少被偷概率</span>
+            </div>
+            <div v-if="localSettings.automation.fast_harvest" class="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <BaseInput
+                v-model.number="localSettings.fastHarvestAdvanceMs"
+                label="提前时间 (毫秒)"
+                type="number"
+                min="50"
+                max="1000"
+                placeholder="200"
+              />
+              <div class="flex items-center text-xs text-gray-500 dark:text-gray-400">
+                <span>建议值：200ms，范围 50-1000ms</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 蹲守偷菜配置 -->
+          <div class="border-t pt-4 space-y-3 dark:border-gray-700">
+            <h4 class="text-sm text-gray-700 font-medium dark:text-gray-300">
+              蹲守偷菜设置
+            </h4>
+            <div class="flex flex-wrap items-center gap-4 rounded bg-purple-50 p-3 dark:bg-purple-900/20">
+              <BaseSwitch v-model="localSettings.automation.stakeout_steal" label="启用蹲守偷菜" />
+              <span class="text-xs text-gray-500 dark:text-gray-400">预判好友作物成熟时间，提前蹲点等待偷取</span>
+            </div>
+            <div v-if="localSettings.automation.stakeout_steal" class="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <BaseInput
+                v-model.number="localSettings.stakeoutSteal.delaySec"
+                label="偷取延迟 (秒)"
+                type="number"
+                min="0"
+                max="60"
+                placeholder="3"
+              />
+              <BaseInput
+                v-model.number="localSettings.stakeoutSteal.maxAheadSec"
+                label="最大提前蹲守 (秒)"
+                type="number"
+                min="60"
+                placeholder="14400"
+              />
+              <div class="flex items-center text-xs text-gray-500 dark:text-gray-400">
+                <span>延迟建议 3-5 秒，最大提前建议 4 小时</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -862,7 +955,7 @@ async function handleTestOffline() {
             />
           </div>
 
-          <div class="border-t pt-3 mt-3 space-y-3 dark:border-gray-700">
+          <div class="mt-3 border-t pt-3 space-y-3 dark:border-gray-700">
             <h4 class="text-sm text-gray-700 font-medium dark:text-gray-300">
               微信配置（关闭微信配置标签时生效）
             </h4>

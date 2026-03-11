@@ -2,7 +2,6 @@
  * 任务系统 - 自动领取任务奖励
  */
 
-const { isAutomationOn } = require('../models/store');
 const { sendMsgAsync, networkEvents } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toLong, toNum, log, logWarn, sleep } = require('../utils/utils');
@@ -97,9 +96,6 @@ function formatTask(t, category = 'main') {
     };
 }
 
-/**
- * 分析任务列表，找出可领取的任务
- */
 function analyzeTaskList(tasks, category = 'main') {
     const claimable = [];
     for (const task of tasks) {
@@ -111,9 +107,6 @@ function analyzeTaskList(tasks, category = 'main') {
     return claimable;
 }
 
-/**
- * 计算奖励摘要
- */
 function getRewardSummary(items) {
     const summary = [];
     for (const item of items) {
@@ -136,6 +129,15 @@ function buildDailyTasksForDebug(taskInfo) {
         ...(Array.isArray(ti.growth_tasks) ? ti.growth_tasks : []),
     ];
     return merged.filter((t) => toNum(t && t.task_type) === 2);
+}
+
+function getTaskCategoryName(category) {
+    const names = {
+        daily: '每日任务',
+        growth: '成长任务',
+        main: '任务',
+    };
+    return names[category] || '任务';
 }
 
 async function checkAndClaimActives(actives) {
@@ -207,7 +209,6 @@ async function checkAndClaimIllustratedRewards() {
 
 async function checkAndClaimTasks() {
     if (checking) return;
-    if (!isAutomationOn('task')) return;
     checking = true;
     try {
         const reply = await getTaskInfo();
@@ -260,7 +261,7 @@ async function doClaim(task) {
         const items = claimReply.items || [];
         const rewardStr = items.length > 0 ? getRewardSummary(items) : '无';
 
-        const categoryName = task.category === 'daily' ? '每日任务' : (task.category === 'growth' ? '成长任务' : '任务');
+        const categoryName = getTaskCategoryName(task.category);
         log('任务', `领取(${categoryName}): ${task.desc}${multipleStr} → ${rewardStr}`, {
             module: 'task', event: '领取任务', result: 'ok', taskId: task.id, shared: useShare
         });
@@ -270,14 +271,12 @@ async function doClaim(task) {
         await sleep(300);
         return true;
     } catch {
-        // 领取失败静默处理
         return false;
     }
 }
 
 function onTaskInfoNotify(taskInfo) {
     if (!taskInfo) return;
-    if (!isAutomationOn('task')) return;
 
     const claimable = [
         ...analyzeTaskList(taskInfo.daily_tasks || [], 'daily'),
@@ -298,7 +297,6 @@ function onTaskInfoNotify(taskInfo) {
 }
 
 async function claimTasksFromList(claimable) {
-    if (!isAutomationOn('task')) return;
     for (const task of claimable) {
         await doClaim(task);
     }
@@ -326,7 +324,7 @@ module.exports = {
     cleanupTaskSystem,
     claimTaskReward,
     getTaskInfo,
-    doClaim, // 供手动领取使用
+    doClaim,
     getTaskClaimDailyState: () => ({
         key: 'task_claim',
         doneToday: taskClaimDoneDateKey === getDateKey(),
@@ -352,7 +350,6 @@ module.exports = {
             const dailyClaimable = analyzeTaskList(dailyAll, 'daily');
             return {
                 key: 'task_claim',
-                // 每日任务总数按 3 计算，完成口径为 progress >= total_progress
                 doneToday: completedCount >= 3,
                 lastClaimAt: taskClaimLastAt,
                 claimableCount: dailyClaimable.length,

@@ -10,17 +10,18 @@ const { sendMsgAsync, networkEvents, getUserState } = require('../utils/network'
 const { types } = require('../utils/proto');
 const { toLong, toNum, log, logWarn, sleep } = require('../utils/utils');
 const { updateStatusGold } = require('./status');
+const { getDateKey, ITEM_IDS } = require('../utils/common');
 
 const SELL_BATCH_SIZE = 15;
 const FERTILIZER_RELATED_IDS = new Set([
-    100003, // 化肥礼包
-    100004, // 有机化肥礼包
-    80001, 80002, 80003, 80004, // 普通化肥道具
-    80011, 80012, 80013, 80014, // 有机化肥道具
+    100003,
+    100004,
+    80001, 80002, 80003, 80004,
+    80011, 80012, 80013, 80014,
 ]);
 const FERTILIZER_CONTAINER_LIMIT_HOURS = 990;
-const NORMAL_CONTAINER_ID = 1011;
-const ORGANIC_CONTAINER_ID = 1012;
+const NORMAL_CONTAINER_ID = ITEM_IDS.NORMAL_FERTILIZER_CONTAINER;
+const ORGANIC_CONTAINER_ID = ITEM_IDS.ORGANIC_FERTILIZER_CONTAINER;
 const NORMAL_FERTILIZER_ITEM_HOURS = new Map([
     [80001, 1], [80002, 4], [80003, 8], [80004, 12],
 ]);
@@ -29,16 +30,6 @@ const ORGANIC_FERTILIZER_ITEM_HOURS = new Map([
 ]);
 let fertilizerGiftDoneDateKey = '';
 let fertilizerGiftLastOpenAt = 0;
-
-function getDateKey() {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-}
-
-// ============ API ============
 
 async function getBag() {
     const body = types.BagRequest.encode(types.BagRequest.create({})).finish();
@@ -54,7 +45,6 @@ function toSellItem(item) {
         id: toLong(idNum),
         count: toLong(countNum),
     };
-    // SellRequest 通常只需要 id + count；仅在 uid 有效时携带
     if (uidNum > 0) payload.uid = toLong(uidNum);
     return payload;
 }
@@ -80,11 +70,10 @@ async function useItem(itemId, count = 1, landIds = []) {
         const isParamError = msg.includes('code=1000020') || msg.includes('请求参数错误');
         if (!isParamError) throw e;
 
-        // 兼容另一种 UseRequest 编码: { item: { id, count } }
         const writer = protobuf.Writer.create();
-        const itemWriter = writer.uint32(10).fork(); // field 1: item
-        itemWriter.uint32(8).int64(toLong(itemId));  // item.id
-        itemWriter.uint32(16).int64(toLong(count));  // item.count
+        const itemWriter = writer.uint32(10).fork();
+        itemWriter.uint32(8).int64(toLong(itemId));
+        itemWriter.uint32(16).int64(toLong(count));
         itemWriter.ldelim();
         const fallbackBody = writer.finish();
 
@@ -118,8 +107,7 @@ function getBagItems(bagReply) {
 function isFertilizerRelatedItemId(itemId) {
     const id = Number(itemId) || 0;
     if (id <= 0) return false;
-    // 禁止对容器道具执行使用，避免触发 1011/1012 补充逻辑
-    if (id === 1011 || id === 1012) return false;
+    if (id === NORMAL_CONTAINER_ID || id === ORGANIC_CONTAINER_ID) return false;
     if (FERTILIZER_RELATED_IDS.has(id)) return true;
     const info = getItemById(id);
     if (!info || typeof info !== 'object') return false;
@@ -190,14 +178,12 @@ async function autoOpenFertilizerGiftPacks() {
 
         let opened = 0;
         const details = [];
-        // 按条目 BatchUse，避免数量大时逐个 Use 造成请求风暴
         for (const row of payloads) {
             const itemId = Number(row.id) || 0;
             const rawCount = Math.max(1, Number(row.count) || 0);
             const { type, perItemHours } = getFertilizerItemTypeAndHours(itemId);
             let useCount = rawCount;
 
-            // 容器达到 990h 后不再使用对应化肥道具；未达到时也按剩余可用小时裁剪数量
             if (type === 'normal' || type === 'organic') {
                 const currentHours = type === 'normal' ? containerHours.normal : containerHours.organic;
                 if (currentHours >= FERTILIZER_CONTAINER_LIMIT_HOURS) {
@@ -217,7 +203,6 @@ async function autoOpenFertilizerGiftPacks() {
                 await batchUseItems([{ itemId, count: useCount, uid: 0 }]);
                 used = useCount;
             } catch {
-                // BatchUse 失败时直接跳过该条目
                 used = 0;
             }
             if (used > 0) {
@@ -260,7 +245,7 @@ async function openFertilizerGiftPacksSilently() {
 function getGoldFromItems(items) {
     for (const item of (items || [])) {
         const id = toNum(item.id);
-        if (id === 1 || id === 1001) {
+        if (ITEM_IDS.GOLD.includes(id)) {
             const count = toNum(item.count);
             if (count > 0) return count;
         }
@@ -271,15 +256,12 @@ function getGoldFromItems(items) {
 function deriveGoldGainFromSellReply(reply, lastKnownGold) {
     const gainFromGetItems = getGoldFromItems((reply && reply.get_items) || []);
     if (gainFromGetItems > 0) {
-        // get_items 通常就是本次获得值
         return { gain: gainFromGetItems, nextKnownGold: lastKnownGold };
     }
 
-    // 兼容旧 proto/旧结构
     const currentOrDelta = getGoldFromItems((reply && (reply.items || reply.sell_items)) || []);
     if (currentOrDelta <= 0) return { gain: 0, nextKnownGold: lastKnownGold };
 
-    // 协议在不同场景下可能返回“当前总金币”或“本次变化值”
     if (lastKnownGold > 0 && currentOrDelta >= lastKnownGold) {
         return { gain: currentOrDelta - lastKnownGold, nextKnownGold: currentOrDelta };
     }
@@ -302,8 +284,8 @@ async function getCurrentTotalsFromBag() {
     for (const item of items) {
         const id = toNum(item.id);
         const count = toNum(item.count);
-        if (id === 1 || id === 1001) gold = count;       // 金币
-        if (id === 1101) exp = count;     // 累计经验
+        if (ITEM_IDS.GOLD.includes(id)) gold = count;
+        if (id === ITEM_IDS.EXP[1]) exp = count;
     }
     return { gold, exp };
 }
@@ -312,7 +294,6 @@ async function getBagDetail() {
     const bagReply = await getBag();
     const rawItems = getBagItems(bagReply);
     
-    // 保留原始物品列表（用于出售等操作）
     const originalItems = [];
     for (const it of (rawItems || [])) {
         const id = toNum(it.id);
@@ -322,7 +303,6 @@ async function getBagDetail() {
         originalItems.push({ id, count, uid });
     }
     
-    // 合并展示
     const merged = new Map();
     for (const it of (rawItems || [])) {
         const id = toNum(it.id);
@@ -331,10 +311,10 @@ async function getBagDetail() {
         const info = getItemById(id) || null;
         let name = info && info.name ? String(info.name) : '';
         let category = 'item';
-        if (id === 1 || id === 1001) {
+        if (ITEM_IDS.GOLD.includes(id)) {
             name = '金币';
             category = 'gold';
-        } else if (id === 1101) {
+        } else if (id === ITEM_IDS.EXP[1]) {
             name = '经验';
             category = 'exp';
         } else if (getPlantByFruitId(id)) {
@@ -347,6 +327,8 @@ async function getBagDetail() {
         }
         if (!name) name = `物品${id}`;
         const interactionType = info && info.interaction_type ? String(info.interaction_type) : '';
+        const priceId = info ? (Number(info.price_id) || 0) : 0;
+        const priceUnit = priceId === 1005 ? '金豆豆' : priceId === 1002 ? '点券' : '金';
 
         if (!merged.has(id)) {
             merged.set(id, {
@@ -356,7 +338,9 @@ async function getBagDetail() {
                 image: getItemImageById(id),
                 category,
                 itemType: info ? (Number(info.type) || 0) : 0,
+                priceId,
                 price: info ? (Number(info.price) || 0) : 0,
+                priceUnit,
                 level: info ? (Number(info.level) || 0) : 0,
                 interactionType,
                 hoursText: '',
@@ -368,7 +352,6 @@ async function getBagDetail() {
 
     const items = Array.from(merged.values()).map((row) => {
         if (row.interactionType === 'fertilizerbucket' && row.count > 0) {
-            // 游戏显示更接近截断到 1 位小数（非四舍五入）
             const hoursFloor1 = Math.floor((row.count / 3600) * 10) / 10;
             row.hoursText = `${hoursFloor1.toFixed(1)}小时`;
         } else {
@@ -377,6 +360,17 @@ async function getBagDetail() {
         return row;
     });
     items.sort((a, b) => {
+        const taRaw = Number(a.itemType || 0);
+        const tbRaw = Number(b.itemType || 0);
+        const typePriority = new Map([
+            [17, 0],
+            [5, 1],
+            [6, 2],
+        ]);
+        const ta = typePriority.has(taRaw) ? typePriority.get(taRaw) : (taRaw > 0 ? (1000 + taRaw) : Number.MAX_SAFE_INTEGER);
+        const tb = typePriority.has(tbRaw) ? typePriority.get(tbRaw) : (tbRaw > 0 ? (1000 + tbRaw) : Number.MAX_SAFE_INTEGER);
+        if (ta !== tb) return ta - tb;
+
         const ca = Number(a.count || 0);
         const cb = Number(b.count || 0);
         if (cb !== ca) return cb - ca;
@@ -385,11 +379,6 @@ async function getBagDetail() {
     return { totalKinds: items.length, items, originalItems };
 }
 
-// ============ 出售逻辑 ============
-
-/**
- * 检查并出售所有果实
- */
 async function sellAllFruits() {
     const sellEnabled = isAutomationOn('sell');
     if (!sellEnabled) {
@@ -428,7 +417,6 @@ async function sellAllFruits() {
                 knownGold = inferred.nextKnownGold;
                 if (gained > 0) serverGoldTotal += gained;
             } catch (batchErr) {
-                // 某个条目可能参数非法，降级为逐个出售，跳过错误条目
                 logWarn('仓库', `批量出售失败，改为逐个重试: ${batchErr.message}`);
                 for (const it of batch) {
                     try {
@@ -452,7 +440,6 @@ async function sellAllFruits() {
             }
             if (i + SELL_BATCH_SIZE < toSell.length) await sleep(300);
         }
-        // 等待金币通知更新（最多 2s）
         let goldAfter = goldBefore;
         const startWait = Date.now();
         while (Date.now() - startWait < 2000) {
@@ -468,7 +455,6 @@ async function sellAllFruits() {
         const totalsDeltaGold = totalsAfter.gold - totalsBefore.gold;
         const totalsDeltaExp = totalsAfter.exp - totalsBefore.exp;
 
-        // 通知缺失时，尝试从背包读取金币做最终兜底
         let bagDelta = 0;
         if (totalGoldDelta <= 0 && serverGoldTotal <= 0) {
             try {
@@ -480,7 +466,6 @@ async function sellAllFruits() {
 
         const totalGoldEarned = Math.max(serverGoldTotal, totalGoldDelta, bagDelta);
         if (totalGoldDelta <= 0 && totalGoldEarned > 0) {
-            // 某些情况下 ItemNotify 丢失，使用出售回包做金币兜底同步
             const state = getUserState();
             if (state) {
                 state.gold = Number(state.gold || 0) + totalGoldEarned;
@@ -499,7 +484,6 @@ async function sellAllFruits() {
             totalsDeltaExp,
         });
         
-        // 发送出售事件，用于统计金币收益
         if (totalGoldEarned > 0) {
             networkEvents.emit('sell', totalGoldEarned);
         }

@@ -6,6 +6,7 @@ import { useAccountStore } from '@/stores/account'
 import { useBagStore } from '@/stores/bag'
 import { useStatusStore } from '@/stores/status'
 import { useToastStore } from '@/stores/toast'
+import { getSafeImageUrl } from '@/utils'
 
 const accountStore = useAccountStore()
 const bagStore = useBagStore()
@@ -17,14 +18,6 @@ const { status, loading: statusLoading, error: statusError, realtimeConnected } 
 
 const imageErrors = ref<Record<string | number, boolean>>({})
 const actionLoading = ref<Record<string | number, boolean>>({})
-
-function getSafeImageUrl(url: string | undefined) {
-  if (!url)
-    return ''
-  if (url.startsWith('http://'))
-    return url.replace('http://', 'https://')
-  return url
-}
 
 const useModal = ref(false)
 const useTarget = ref<any>(null)
@@ -59,6 +52,8 @@ function canUseItem(item: any): boolean {
     return false
   if (item.category === 'fruit' || item.category === 'seed')
     return false
+  if (Number(item.itemType) === 11)
+    return true
   if (it && it !== 'none' && it !== '')
     return true
   return false
@@ -74,6 +69,15 @@ function canSellItem(item: any): boolean {
   if (Number(item.price) > 0)
     return true
   return false
+}
+
+function getPriceClass(item: any) {
+  const priceId = Number(item?.priceId || 0)
+  if (priceId === 1005)
+    return 'text-amber-500 dark:text-amber-400'
+  if (priceId === 1002)
+    return 'text-sky-500 dark:text-sky-400'
+  return 'text-amber-600 dark:text-amber-400'
 }
 
 const sellableItems = computed(() => items.value.filter(canSellItem))
@@ -165,11 +169,9 @@ async function confirmSell() {
     return
   sellSubmitting.value = true
   try {
-    // 使用 originalItems 获取原始物品数据（包含正确的 uid）
     const payload: Array<{ id: number, count: number, uid?: number }> = []
     for (const selectedItem of selectedItems.value) {
       const itemId = Number(selectedItem.id)
-      // 从 originalItems 中找到所有匹配的物品
       const matchingItems = originalItems.value.filter((it: any) => Number(it.id) === itemId)
       for (const it of matchingItems) {
         payload.push({
@@ -211,8 +213,12 @@ async function loadBag() {
 
 defineExpose({ loadBag })
 
-onMounted(() => { loadBag() })
-watch(currentAccountId, () => { loadBag() })
+onMounted(() => {
+  loadBag()
+})
+watch(currentAccountId, () => {
+  loadBag()
+})
 useEventListener(document, 'visibilitychange', () => {
   if (typeof document !== 'undefined' && document.visibilityState === 'visible' && currentAccountId.value)
     loadBag()
@@ -360,9 +366,9 @@ useIntervalFn(loadBag, 60000)
               >种子</span>
             </div>
             <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500 dark:text-gray-400">
-              <span v-if="item.price > 0" class="flex items-center gap-0.5">
-                <div class="i-fas-coins text-[10px] text-amber-400" />
-                {{ item.price }}
+              <span v-if="item.price > 0" class="flex items-center gap-0.5" :class="getPriceClass(item)">
+                <div class="i-fas-coins text-[10px]" />
+                {{ item.price }}{{ item.priceUnit || '金' }}
               </span>
               <span v-if="item.level > 0">Lv{{ item.level }}</span>
             </div>

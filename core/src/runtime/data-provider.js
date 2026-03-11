@@ -94,6 +94,7 @@ function createDataProvider(options) {
         // 透传方法
         getLands: (accountRef) => callWorkerApi(resolveAccountRefId(accountRef), 'getLands'),
         getFriends: (accountRef) => callWorkerApi(resolveAccountRefId(accountRef), 'getFriends'),
+        getInteractRecords: (accountRef) => callWorkerApi(resolveAccountRefId(accountRef), 'getInteractRecords'),
         getFriendLands: (accountRef, gid) => callWorkerApi(resolveAccountRefId(accountRef), 'getFriendLands', gid),
         doFriendOp: (accountRef, gid, opType) => callWorkerApi(resolveAccountRefId(accountRef), 'doFriendOp', gid, opType),
         doBatchFriendOp: (accountRef, opType) => callWorkerApi(resolveAccountRefId(accountRef), 'doBatchFriendOp', opType),

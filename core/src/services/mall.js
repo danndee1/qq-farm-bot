@@ -8,10 +8,10 @@ const { sendMsgAsync, getUserState } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toNum, log, sleep } = require('../utils/utils');
 const { getFertilizerBuyType } = require('../models/store');
+const { getDateKey, COOLDOWN_MS } = require('../utils/common');
 
 const ORGANIC_FERTILIZER_MALL_GOODS_ID = 1002;
 const NORMAL_FERTILIZER_MALL_GOODS_ID = 1001;
-const BUY_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_ROUNDS = 100;
 const BUY_PER_ROUND = 10;
 const FREE_GIFTS_DAILY_KEY = 'mall_free_gifts';
@@ -23,14 +23,6 @@ let buyPausedNoGoldDateKey = '';
 let freeGiftDoneDateKey = '';
 let freeGiftLastAt = 0;
 let freeGiftLastCheckAt = 0;
-
-function getDateKey() {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-}
 
 async function getMallListBySlotType(slotType = 1) {
     const body = types.GetMallListBySlotTypeRequest.encode(types.GetMallListBySlotTypeRequest.create({
@@ -57,7 +49,6 @@ async function getMallGoodsList(slotType = 1) {
         try {
             goods.push(types.MallGoods.decode(b));
         } catch {
-            // ignore
         }
     }
     return goods;
@@ -68,7 +59,6 @@ function parseMallPriceValue(priceField) {
     if (typeof priceField === 'number') return Math.max(0, Math.floor(priceField));
     const bytes = Buffer.isBuffer(priceField) ? priceField : Buffer.from(priceField || []);
     if (!bytes.length) return 0;
-    // 从 bytes 中读取 field=2 的 varint 作为价格
     let idx = 0;
     let parsed = 0;
     while (idx < bytes.length) {
@@ -146,7 +136,7 @@ async function autoBuyFertilizerViaMall(buyType) {
 
 async function autoBuyOrganicFertilizer(force = false) {
     const now = Date.now();
-    if (!force && now - lastBuyAt < BUY_COOLDOWN_MS) return 0;
+    if (!force && now - lastBuyAt < COOLDOWN_MS.DEFAULT) return 0;
     lastBuyAt = now;
 
     try {
@@ -177,7 +167,7 @@ function isDoneTodayByKey(key) {
 async function buyFreeGifts(force = false) {
     const now = Date.now();
     if (!force && isDoneTodayByKey(freeGiftDoneDateKey)) return 0;
-    if (!force && now - freeGiftLastCheckAt < BUY_COOLDOWN_MS) return 0;
+    if (!force && now - freeGiftLastCheckAt < COOLDOWN_MS.DEFAULT) return 0;
     freeGiftLastCheckAt = now;
 
     try {
@@ -188,7 +178,6 @@ async function buyFreeGifts(force = false) {
             try {
                 goods.push(types.MallGoods.decode(b));
             } catch {
-                // ignore
             }
         }
         const free = goods.filter((g) => !!g && g.is_free === true && Number(g.goods_id || 0) > 0);
@@ -208,7 +197,6 @@ async function buyFreeGifts(force = false) {
                 await purchaseMallGoods(Number(g.goods_id || 0), 1);
                 bought += 1;
             } catch {
-                // 单个失败跳过
             }
         }
         freeGiftDoneDateKey = getDateKey();
