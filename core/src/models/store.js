@@ -8,7 +8,7 @@ const { readTextFile, readJsonFile, writeJsonFileAtomic } = require('../services
 
 const STORE_FILE = getDataFile('store.json');
 const ACCOUNTS_FILE = getDataFile('accounts.json');
-const ALLOWED_PLANTING_STRATEGIES = ['preferred', 'level', 'max_exp', 'max_fert_exp', 'max_profit', 'max_fert_profit', 'task'];
+const ALLOWED_PLANTING_STRATEGIES = ['preferred', 'level', 'max_exp', 'max_fert_exp', 'max_profit', 'max_fert_profit'];
 const PUSHOO_CHANNELS = new Set([
     'webhook', 'qmsg', 'serverchan', 'pushplus', 'pushplushxtrip',
     'dingtalk', 'wecom', 'bark', 'gocqhttp', 'onebot', 'atri',
@@ -44,7 +44,7 @@ const DEFAULT_ACCOUNT_CONFIG = {
         fertilizerBuyType: 'organic',
         fertilizeLandLevel: 1,
         fertilizer_multi_season: false,
-        skip_own_weed_bug: false,
+        clear_own_weed_bug: false,
         // 秒收取：作物成熟瞬间自动收获
         fast_harvest: false,
         // 蹲守偷菜：预判好友作物成熟时间提前蹲点
@@ -127,6 +127,8 @@ const globalConfig = {
     offlineReminder: { ...DEFAULT_OFFLINE_REMINDER },
     // 用户隔离的下线提醒配置: { [username]: config }
     userOfflineReminders: {},
+    // 用户隔离的自动控制同步: { [username]: { enabled: boolean, snapshot: { automation, fastHarvestAdvanceMs, stakeoutSteal, stakeoutFriendList } } }
+    userAutomationSync: {},
     adminPasswordHash: '',
     oauth: {
         enabled: false,
@@ -191,6 +193,75 @@ function normalizeOfflineReminder(input) {
     };
 }
 
+function normalizeAutomationValue(key, value, fallback) {
+    if (fallback === undefined) return undefined;
+    if (key === 'fertilizer') {
+        const allowed = ['both', 'normal', 'organic', 'none', 'smart'];
+        return allowed.includes(value) ? value : fallback;
+    }
+    if (key === 'fertilizerBuyType') {
+        const allowed = ['normal', 'organic'];
+        return allowed.includes(value) ? value : fallback;
+    }
+    if (key === 'fertilizeLandLevel') {
+        const allowed = [1, 2, 3, 4];
+        return allowed.includes(Number(value)) ? Number(value) : fallback;
+    }
+    if (key === 'guid_range_start' || key === 'guid_range_end' || key === 'guid_index_current' || key === 'guid_index_interval') {
+        const numVal = Number(value);
+        return Number.isFinite(numVal) ? numVal : fallback;
+    }
+    if (key === 'guid_index_completed') {
+        return !!value;
+    }
+    return !!value;
+}
+
+function normalizeUserAutomationSyncEntry(input) {
+    const src = (input && typeof input === 'object') ? input : {};
+    const enabled = !!src.enabled;
+    const snapshot = (src.snapshot && typeof src.snapshot === 'object') ? src.snapshot : {};
+    const next = {
+        enabled,
+        snapshot: {
+            automation: {},
+            fastHarvestAdvanceMs: undefined,
+            stakeoutSteal: undefined,
+            stakeoutFriendList: undefined,
+        },
+    };
+
+    const snapAuto = (snapshot.automation && typeof snapshot.automation === 'object') ? snapshot.automation : {};
+    const base = DEFAULT_ACCOUNT_CONFIG.automation;
+    const outAuto = {};
+    for (const key of Object.keys(base)) {
+        if (snapAuto[key] === undefined) continue;
+        const normalized = normalizeAutomationValue(key, snapAuto[key], base[key]);
+        if (normalized !== undefined) outAuto[key] = normalized;
+    }
+    if (snapAuto.clear_own_weed_bug === undefined && snapAuto.skip_own_weed_bug !== undefined) {
+        outAuto.clear_own_weed_bug = !snapAuto.skip_own_weed_bug;
+    }
+    next.snapshot.automation = outAuto;
+
+    if (snapshot.fastHarvestAdvanceMs !== undefined && snapshot.fastHarvestAdvanceMs !== null) {
+        next.snapshot.fastHarvestAdvanceMs = Math.max(50, Math.min(1000, Number(snapshot.fastHarvestAdvanceMs) || 200));
+    }
+    if (snapshot.stakeoutSteal && typeof snapshot.stakeoutSteal === 'object') {
+        const delaySec = Math.max(0, Math.min(60, Number(snapshot.stakeoutSteal.delaySec) || 3));
+        const maxAheadSec = Math.max(60, Number(snapshot.stakeoutSteal.maxAheadSec) || 4 * 3600);
+        next.snapshot.stakeoutSteal = {
+            enabled: snapshot.stakeoutSteal.enabled !== undefined ? !!snapshot.stakeoutSteal.enabled : false,
+            delaySec,
+            maxAheadSec,
+        };
+    }
+    if (Array.isArray(snapshot.stakeoutFriendList)) {
+        next.snapshot.stakeoutFriendList = snapshot.stakeoutFriendList.map(Number).filter(n => Number.isFinite(n) && n > 0);
+    }
+    return next;
+}
+
 function cloneAccountConfig(base = DEFAULT_ACCOUNT_CONFIG) {
     const srcAutomation = (base && base.automation && typeof base.automation === 'object')
         ? base.automation
@@ -198,6 +269,9 @@ function cloneAccountConfig(base = DEFAULT_ACCOUNT_CONFIG) {
     const automation = { ...DEFAULT_ACCOUNT_CONFIG.automation };
     for (const key of Object.keys(automation)) {
         if (srcAutomation[key] !== undefined) automation[key] = srcAutomation[key];
+    }
+    if (srcAutomation.clear_own_weed_bug === undefined && srcAutomation.skip_own_weed_bug !== undefined) {
+        automation.clear_own_weed_bug = !srcAutomation.skip_own_weed_bug;
     }
 
     const rawBlacklist = Array.isArray(base.friendBlacklist) ? base.friendBlacklist : [];
@@ -268,6 +342,9 @@ function normalizeAccountConfig(input, fallback = accountFallbackConfig) {
     const cfg = cloneAccountConfig(fallback || DEFAULT_ACCOUNT_CONFIG);
 
     if (src.automation && typeof src.automation === 'object') {
+        if (src.automation.clear_own_weed_bug === undefined && src.automation.skip_own_weed_bug !== undefined) {
+            cfg.automation.clear_own_weed_bug = !src.automation.skip_own_weed_bug;
+        }
         for (const [k, v] of Object.entries(src.automation)) {
             if (!ALLOWED_AUTOMATION_KEYS.has(k)) continue;
             if (k === 'fertilizer') {
@@ -471,6 +548,15 @@ function loadGlobalConfig() {
                 }
             }
 
+            if (data.userAutomationSync && typeof data.userAutomationSync === 'object') {
+                globalConfig.userAutomationSync = {};
+                for (const [username, cfg] of Object.entries(data.userAutomationSync)) {
+                    const u = String(username || '').trim();
+                    if (!u) continue;
+                    globalConfig.userAutomationSync[u] = normalizeUserAutomationSyncEntry(cfg);
+                }
+            }
+
             if (typeof data.adminPasswordHash === 'string') {
                 globalConfig.adminPasswordHash = data.adminPasswordHash;
             }
@@ -543,6 +629,17 @@ function sanitizeGlobalConfigBeforeSave() {
         nextReminders[u] = normalizeOfflineReminder(cfg);
     }
     globalConfig.userOfflineReminders = nextReminders;
+
+    const userAutomationSync = (globalConfig.userAutomationSync && typeof globalConfig.userAutomationSync === 'object')
+        ? globalConfig.userAutomationSync
+        : {};
+    const nextUserAutomationSync = {};
+    for (const [username, cfg] of Object.entries(userAutomationSync)) {
+        const u = String(username || '').trim();
+        if (!u) continue;
+        nextUserAutomationSync[u] = normalizeUserAutomationSyncEntry(cfg);
+    }
+    globalConfig.userAutomationSync = nextUserAutomationSync;
 }
 
 // 保存全局配置
@@ -891,6 +988,105 @@ function deleteUserOfflineReminder(username) {
     }
 }
 
+// ============ 用户隔离的运行时连接配置 ============
+const DEFAULT_RUNTIME_CONFIG = {
+    serverUrl: 'wss://gate-obt.nqf.qq.com/prod/ws',
+    clientVersion: '1.7.0.6_20260313',
+    os: 'iOS',
+    osVersion: 'iOS 26.2.1',
+    networkType: 'wifi',
+    memory: '7672',
+    deviceId: 'iPhone X<iPhone18,3>',
+};
+
+function normalizeRuntimeConfig(cfg) {
+    const c = cfg || {};
+    return {
+        serverUrl: String(c.serverUrl || DEFAULT_RUNTIME_CONFIG.serverUrl).trim(),
+        clientVersion: String(c.clientVersion || DEFAULT_RUNTIME_CONFIG.clientVersion).trim(),
+        os: String(c.os || DEFAULT_RUNTIME_CONFIG.os).trim(),
+        osVersion: String(c.osVersion || DEFAULT_RUNTIME_CONFIG.osVersion).trim(),
+        networkType: String(c.networkType || DEFAULT_RUNTIME_CONFIG.networkType).trim(),
+        memory: String(c.memory || DEFAULT_RUNTIME_CONFIG.memory).trim(),
+        deviceId: String(c.deviceId || DEFAULT_RUNTIME_CONFIG.deviceId).trim(),
+    };
+}
+
+function getRuntimeConfig(username) {
+    // 必须指定用户名，按用户隔离
+    if (!username) {
+        return normalizeRuntimeConfig(globalConfig.runtimeConfig);
+    }
+    const userCfg = globalConfig.userRuntimeConfigs && globalConfig.userRuntimeConfigs[username];
+    if (userCfg) {
+        return normalizeRuntimeConfig(userCfg);
+    }
+    // 用户未设置时返回默认配置（但不保存到全局）
+    return normalizeRuntimeConfig({});
+}
+
+function setRuntimeConfig(cfg, username) {
+    // 必须指定用户名，按用户隔离
+    if (!username) {
+        // 兼容旧版本：如果没有指定用户名，保存到全局配置
+        const current = normalizeRuntimeConfig(globalConfig.runtimeConfig);
+        globalConfig.runtimeConfig = normalizeRuntimeConfig({ ...current, ...(cfg || {}) });
+        saveGlobalConfig();
+        return getRuntimeConfig();
+    }
+    if (!globalConfig.userRuntimeConfigs) {
+        globalConfig.userRuntimeConfigs = {};
+    }
+    const current = normalizeRuntimeConfig(globalConfig.userRuntimeConfigs[username] || {});
+    globalConfig.userRuntimeConfigs[username] = normalizeRuntimeConfig({ ...current, ...(cfg || {}) });
+    saveGlobalConfig();
+    return getRuntimeConfig(username);
+}
+
+function deleteUserRuntimeConfig(username) {
+    if (globalConfig.userRuntimeConfigs && globalConfig.userRuntimeConfigs[username]) {
+        delete globalConfig.userRuntimeConfigs[username];
+        saveGlobalConfig();
+    }
+}
+
+function getUserAutomationSync(username) {
+    const u = String(username || '').trim();
+    if (!u) return { enabled: false, snapshot: {} };
+    const cfg = globalConfig.userAutomationSync && globalConfig.userAutomationSync[u];
+    if (cfg) return normalizeUserAutomationSyncEntry(cfg);
+    return { enabled: false, snapshot: {} };
+}
+
+function setUserAutomationSync(username, enabled, snapshot) {
+    const u = String(username || '').trim();
+    if (!u) return { enabled: false, snapshot: {} };
+    if (!globalConfig.userAutomationSync) globalConfig.userAutomationSync = {};
+    const current = getUserAutomationSync(u);
+    const next = normalizeUserAutomationSyncEntry({
+        enabled: enabled !== undefined ? !!enabled : current.enabled,
+        snapshot: snapshot !== undefined ? snapshot : (current.snapshot || {}),
+    });
+    globalConfig.userAutomationSync[u] = next;
+    saveGlobalConfig();
+    return getUserAutomationSync(u);
+}
+
+function setUserAutomationSyncSnapshot(username, snapshot) {
+    const u = String(username || '').trim();
+    if (!u) return { enabled: false, snapshot: {} };
+    const current = getUserAutomationSync(u);
+    const merged = {
+        ...(current.snapshot || {}),
+        ...(snapshot && typeof snapshot === 'object' ? snapshot : {}),
+        automation: {
+            ...((current.snapshot && current.snapshot.automation) ? current.snapshot.automation : {}),
+            ...((snapshot && snapshot.automation && typeof snapshot.automation === 'object') ? snapshot.automation : {}),
+        },
+    };
+    return setUserAutomationSync(u, current.enabled, merged);
+}
+
 // ============ 账号管理 ============
 function loadAccounts() {
     ensureDataDir();
@@ -930,11 +1126,20 @@ function addOrUpdateAccount(acc) {
     } else {
         const id = data.nextId++;
         touchedAccountId = String(id);
+        const defaultName = String(
+            acc.name
+            || acc.nick
+            || (acc.gid ? `GID:${acc.gid}` : '')
+            || '',
+        ).trim() || `账号${id}`;
         data.accounts.push({
             id: touchedAccountId,
-            name: acc.name || `账号${id}`,
+            name: defaultName,
             code: acc.code || '',
             platform: acc.platform || 'qq',
+            gid: acc.gid ? String(acc.gid) : '',
+            openId: acc.openId ? String(acc.openId) : '',
+            nick: acc.nick ? String(acc.nick) : '',
             uin: acc.uin ? String(acc.uin) : '',
             qq: acc.qq ? String(acc.qq) : (acc.uin ? String(acc.uin) : ''),
             avatar: acc.avatar || acc.avatarUrl || '',
@@ -1096,6 +1301,13 @@ module.exports = {
     getOfflineReminder,
     setOfflineReminder,
     deleteUserOfflineReminder,
+    // 运行时连接配置
+    getRuntimeConfig,
+    setRuntimeConfig,
+    deleteUserRuntimeConfig,
+    getUserAutomationSync,
+    setUserAutomationSync,
+    setUserAutomationSyncSnapshot,
     getAccounts,
     addOrUpdateAccount,
     deleteAccount,

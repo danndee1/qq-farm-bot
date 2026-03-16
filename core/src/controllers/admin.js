@@ -13,17 +13,18 @@ const { Server: SocketIOServer } = require('socket.io');
 const { version } = require('../../package.json');
 const { CONFIG } = require('../config/config');
 const { getLevelExpProgress } = require('../config/gameConfig');
-const { getResourcePath, getDataDir } = require('../config/runtime-paths');
+const { getResourcePath } = require('../config/runtime-paths');
 const store = require('../models/store');
 const { addOrUpdateAccount, deleteAccount } = store;
 const { findAccountByRef, normalizeAccountRef, resolveAccountId } = require('../services/account-resolver');
 const { createModuleLogger } = require('../services/logger');
 const { getSchedulerRegistrySnapshot } = require('../services/scheduler');
 const { OauthService } = require('../services/oauth');
+const { fetchProfileByCode } = require('../services/manual-login-profile');
 const userStore = require('../models/user-store');
 
+const hashPassword = (pwd) => crypto.createHash('sha256').update(String(pwd || '')).digest('hex');
 const adminLogger = createModuleLogger('admin');
-const shouldHideUserLog = (username) => userStore.isSuperAdminUsername(username);
 
 let app = null;
 let server = null;
@@ -208,61 +209,60 @@ function startAdminServer(dataProvider) {
 
     // 登录与鉴权
     app.post('/api/login', (req, res) => {
-        const username = String(req.body?.username || '').trim();
-        const password = String(req.body?.password || '').trim();
-        if (!username || !password) {
-            return res.status(400).json({ ok: false, error: '用户名和密码都不能为空' });
-        }
-        const user = userStore.validateUser(username, password);
-        if (!user) {
-            return res.status(401).json({ ok: false, error: '用户名或密码错误' });
-        }
+        const { username, password } = req.body || {};
 
-        if (!shouldHideUserLog(username)) {
+        // 如果提供了用户名，使用用户系统登录
+        if (username && password) {
+            const user = userStore.validateUser(username, password);
+            if (!user) {
+                return res.status(401).json({ ok: false, error: '用户名或密码错误' });
+            }
+
             console.log('[登录检查] 用户:', username, '角色:', user.role, '卡密信息:', user.card);
-        }
 
-        // 管理员不检查封禁和过期
-        if (user.role !== 'admin') {
-            // 检查用户是否被封禁
-            if (user.card && user.card.enabled === false) {
-                if (!shouldHideUserLog(username)) {
+            // 管理员不检查封禁和过期
+            if (user.role !== 'admin') {
+                // 检查用户是否被封禁
+                if (user.card && user.card.enabled === false) {
                     console.log('[登录拒绝] 用户已被封禁:', username);
+                    return res.status(403).json({ ok: false, error: '账号已被封禁，请联系管理员' });
                 }
-                return res.status(403).json({ ok: false, error: '账号已被封禁，请联系管理员' });
+
+                // 检查是否过期（仅对非永久卡）
+                if (user.card && user.card.expiresAt) {
+                    const now = Date.now();
+                    if (user.card.expiresAt < now) {
+                        console.log('[登录拒绝] 用户已过期:', username);
+                        return res.status(403).json({ ok: false, error: '账号已过期，请续费后重新登录' });
+                    }
+                }
             }
 
-            // 检查是否过期（仅对非永久卡）
-            if (user.card && user.card.expiresAt) {
-                const now = Date.now();
-                if (user.card.expiresAt < now) {
-                    if (!shouldHideUserLog(username)) {
-                        console.log('[登录拒绝] 用户已过期:', username);
-                    }
-                    return res.status(403).json({ ok: false, error: '账号已过期，请续费后重新登录' });
-                }
-            }
+            const token = issueToken();
+            tokens.add(token);
+            tokenUserMap.set(token, user);
+            console.log('[登录成功]', username, '角色:', user.role);
+            return res.json({ ok: true, data: { token, role: user.role, card: user.card, user: { username: user.username } } });
         }
 
+        // 兼容旧版：仅密码登录（管理员）
+        const input = String(password || '');
+        const storedHash = store.getAdminPasswordHash ? store.getAdminPasswordHash() : '';
+        let ok = false;
+        if (storedHash) {
+            ok = hashPassword(input) === storedHash;
+        } else {
+            ok = input === String(CONFIG.adminPassword || '');
+        }
+        if (!ok) {
+            return res.status(401).json({ ok: false, error: 'Invalid password' });
+        }
         const token = issueToken();
         tokens.add(token);
-        tokenUserMap.set(token, user);
-        if (!shouldHideUserLog(username)) {
-            console.log('[登录成功]', username, '角色:', user.role);
-        }
-        return res.json({
-            ok: true,
-            data: {
-                token,
-                role: user.role,
-                card: user.card,
-                userCount: userStore.getUserCount(),
-                user: {
-                    username: user.username,
-                    canWipeData: userStore.isSuperAdminUsername(user.username)
-                }
-            }
-        });
+        // 旧版登录也创建用户对象（管理员）
+        const adminUser = { username: 'admin', role: 'admin', card: null };
+        tokenUserMap.set(token, adminUser);
+        res.json({ ok: true, data: { token, role: 'admin', card: null, user: { username: 'admin' } } });
     });
 
     // 注册接口
@@ -383,7 +383,6 @@ function startAdminServer(dataProvider) {
                 token, 
                 role: user.role, 
                 card: user.card, 
-                userCount: userStore.getUserCount(),
                 user: { username: user.username } 
             } 
         });
@@ -540,6 +539,29 @@ function startAdminServer(dataProvider) {
         return accounts.map(a => a.id);
     };
 
+    function getUserAutomationSyncConfig(user) {
+        if (!user || !store.getUserAutomationSync) return { enabled: false, snapshot: {} };
+        return store.getUserAutomationSync(user.username);
+    }
+
+    function buildAutomationSyncSnapshotFromAccount(accountId) {
+        const id = String(accountId || '').trim();
+        if (!id) return {};
+        const automation = store.getAutomation ? store.getAutomation(id) : {};
+        const fastHarvestConfig = (typeof store.getFastHarvestConfig === 'function') ? store.getFastHarvestConfig(id) : { advanceMs: 200 };
+        const stakeoutStealConfig = (typeof store.getStakeoutStealConfig === 'function') ? store.getStakeoutStealConfig(id) : { enabled: false, delaySec: 3, maxAheadSec: 4 * 3600, friendList: [] };
+        return {
+            automation,
+            fastHarvestAdvanceMs: fastHarvestConfig.advanceMs,
+            stakeoutSteal: {
+                enabled: !!stakeoutStealConfig.enabled,
+                delaySec: stakeoutStealConfig.delaySec,
+                maxAheadSec: stakeoutStealConfig.maxAheadSec,
+            },
+            stakeoutFriendList: Array.isArray(stakeoutStealConfig.friendList) ? stakeoutStealConfig.friendList : [],
+        };
+    }
+
     const isSoftRuntimeError = (err) => {
         const msg = String((err && err.message) || '');
         return msg === '账号未运行' || msg === 'API Timeout';
@@ -606,8 +628,18 @@ function startAdminServer(dataProvider) {
 
         try {
             let lastData = null;
+            const currentUser = req.currentUser;
+            const syncCfg = getUserAutomationSyncConfig(currentUser);
+            const targets = (syncCfg.enabled && currentUser)
+                ? getAccessibleAccountIds(req)
+                : [id];
             for (const [k, v] of Object.entries(req.body)) {
-                lastData = await provider.setAutomation(id, k, v);
+                for (const accountId of targets) {
+                    lastData = await provider.setAutomation(accountId, k, v);
+                }
+            }
+            if (syncCfg.enabled && currentUser && store.setUserAutomationSyncSnapshot) {
+                store.setUserAutomationSyncSnapshot(currentUser.username, { automation: store.getAutomation(id) });
             }
             res.json({ ok: true, data: lastData || {} });
         } catch (e) {
@@ -1272,6 +1304,30 @@ function startAdminServer(dataProvider) {
 
         try {
             const data = await provider.saveSettings(id, req.body || {});
+
+            const currentUser = req.currentUser;
+            const syncCfg = getUserAutomationSyncConfig(currentUser);
+            if (syncCfg.enabled && currentUser) {
+                const body = (req.body && typeof req.body === 'object') ? req.body : {};
+                const syncPayload = {};
+                if (body.fastHarvestAdvanceMs !== undefined) syncPayload.fastHarvestAdvanceMs = body.fastHarvestAdvanceMs;
+                if (body.stakeoutSteal !== undefined) syncPayload.stakeoutSteal = body.stakeoutSteal;
+                if (body.stakeoutFriendList !== undefined) syncPayload.stakeoutFriendList = body.stakeoutFriendList;
+
+                if (Object.keys(syncPayload).length > 0) {
+                    const targets = getAccessibleAccountIds(req).filter(aid => String(aid) !== String(id));
+                    for (const accountId of targets) {
+                        store.applyConfigSnapshot(syncPayload, { accountId });
+                        if (provider && typeof provider.broadcastConfig === 'function') {
+                            provider.broadcastConfig(accountId);
+                        }
+                    }
+                    if (store.setUserAutomationSyncSnapshot) {
+                        store.setUserAutomationSyncSnapshot(currentUser.username, syncPayload);
+                    }
+                }
+            }
+
             res.json({ ok: true, data: data || {} });
         } catch (e) {
             res.status(500).json({ ok: false, error: e.message });
@@ -1286,6 +1342,56 @@ function startAdminServer(dataProvider) {
             res.json({ ok: true, data: data || {} });
         } catch (e) {
             res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    app.get('/api/user/automation-sync', (req, res) => {
+        const currentUser = req.currentUser;
+        if (!currentUser) {
+            return res.status(401).json({ ok: false, error: '未登录' });
+        }
+        const cfg = getUserAutomationSyncConfig(currentUser);
+        return res.json({ ok: true, data: { enabled: !!cfg.enabled } });
+    });
+
+    app.post('/api/user/automation-sync', async (req, res) => {
+        try {
+            const currentUser = req.currentUser;
+            if (!currentUser) {
+                return res.status(401).json({ ok: false, error: '未登录' });
+            }
+
+            const enabled = !!(req.body && req.body.enabled);
+            const sourceAccountIdRaw = (req.body && (req.body.sourceAccountId || req.body.accountId)) || '';
+            const sourceAccountId = sourceAccountIdRaw ? resolveAccId(sourceAccountIdRaw) : '';
+
+            if (enabled) {
+                const accessibleIds = getAccessibleAccountIds(req);
+                const baseId = sourceAccountId && checkAccountAccess(req, sourceAccountId)
+                    ? sourceAccountId
+                    : (accessibleIds[0] || '');
+                const snapshot = buildAutomationSyncSnapshotFromAccount(baseId);
+                if (store.setUserAutomationSync) {
+                    store.setUserAutomationSync(currentUser.username, true, snapshot);
+                }
+                for (const accountId of accessibleIds) {
+                    store.applyConfigSnapshot(snapshot, { accountId });
+                    if (provider && typeof provider.broadcastConfig === 'function') {
+                        provider.broadcastConfig(accountId);
+                    }
+                }
+            }
+            else {
+                const currentCfg = getUserAutomationSyncConfig(currentUser);
+                if (store.setUserAutomationSync) {
+                    store.setUserAutomationSync(currentUser.username, false, currentCfg.snapshot || {});
+                }
+            }
+
+            const cfg = getUserAutomationSyncConfig(currentUser);
+            return res.json({ ok: true, data: { enabled: !!cfg.enabled } });
+        } catch (e) {
+            return res.status(500).json({ ok: false, error: e.message });
         }
     });
 
@@ -1363,6 +1469,72 @@ function startAdminServer(dataProvider) {
         }
     });
 
+    // API: 获取运行时连接配置
+    app.get('/api/settings/runtime-config', authRequired, async (req, res) => {
+        try {
+            const currentUser = req.currentUser;
+            if (!currentUser) {
+                return res.status(401).json({ ok: false, error: '未登录' });
+            }
+
+            // 从用户配置中读取运行时连接配置
+            const runtimeConfig = store.getRuntimeConfig
+                ? store.getRuntimeConfig(currentUser.username)
+                : {
+                    serverUrl: 'wss://gate-obt.nqf.qq.com/prod/ws',
+                    clientVersion: '1.7.0.6_20260313',
+                    os: 'iOS',
+                    osVersion: 'iOS 26.2.1',
+                    networkType: 'wifi',
+                    memory: '7672',
+                    deviceId: 'iPhone X<iPhone18,3>',
+                };
+
+            res.json({ ok: true, data: runtimeConfig });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
+    // API: 保存运行时连接配置
+    app.post('/api/settings/runtime-config', authRequired, async (req, res) => {
+        try {
+            const body = (req.body && typeof req.body === 'object') ? req.body : {};
+            const currentUser = req.currentUser;
+
+            if (!currentUser) {
+                return res.status(401).json({ ok: false, error: '未登录' });
+            }
+
+            // 验证必填字段
+            const requiredFields = ['serverUrl', 'clientVersion', 'os'];
+            for (const field of requiredFields) {
+                if (!body[field]) {
+                    return res.status(400).json({ ok: false, error: `缺少必填字段: ${field}` });
+                }
+            }
+
+            const config = {
+                serverUrl: String(body.serverUrl || '').trim(),
+                clientVersion: String(body.clientVersion || '').trim(),
+                os: String(body.os || '').trim(),
+                osVersion: String(body.osVersion || '').trim(),
+                networkType: String(body.networkType || '').trim(),
+                memory: String(body.memory || '').trim(),
+                deviceId: String(body.deviceId || '').trim(),
+            };
+
+            // 保存到用户配置中
+            const data = store.setRuntimeConfig
+                ? store.setRuntimeConfig(config, currentUser.username)
+                : config;
+
+            res.json({ ok: true, data: data || {} });
+        } catch (e) {
+            res.status(500).json({ ok: false, error: e.message });
+        }
+    });
+
     // API: 获取配置
     app.get('/api/settings', async (req, res) => {
         try {
@@ -1392,6 +1564,7 @@ function startAdminServer(dataProvider) {
             const fastHarvestConfig = (typeof store.getFastHarvestConfig === 'function') ? store.getFastHarvestConfig(id) : { enabled: false, advanceMs: 200 };
             // 获取蹲守偷菜配置
             const stakeoutStealConfig = (typeof store.getStakeoutStealConfig === 'function') ? store.getStakeoutStealConfig(id) : { enabled: false, delaySec: 3, maxAheadSec: 4 * 3600, friendList: [] };
+            const automationSyncEnabled = !!getUserAutomationSyncConfig(currentUser).enabled;
 
             res.json({
                 ok: true,
@@ -1415,6 +1588,7 @@ function startAdminServer(dataProvider) {
                         maxAheadSec: stakeoutStealConfig.maxAheadSec,
                     },
                     stakeoutFriendList: stakeoutStealConfig.friendList,
+                    automationSyncEnabled,
                 }
             });
         } catch (e) {
@@ -1470,6 +1644,21 @@ function startAdminServer(dataProvider) {
                 ])
                 : [];
 
+            const currentUser = req.currentUser;
+            const syncCfg = getUserAutomationSyncConfig(currentUser);
+            if (syncCfg.enabled && currentUser && typeof store.setStakeoutFriendList === 'function') {
+                const targets = getAccessibleAccountIds(req).filter(aid => String(aid) !== String(id));
+                for (const accountId of targets) {
+                    store.setStakeoutFriendList(accountId, result);
+                    if (provider && typeof provider.broadcastConfig === 'function') {
+                        provider.broadcastConfig(accountId);
+                    }
+                }
+                if (store.setUserAutomationSyncSnapshot) {
+                    store.setUserAutomationSyncSnapshot(currentUser.username, { stakeoutFriendList: result });
+                }
+            }
+
             res.json({ ok: true, data: { friendList: result } });
         } catch (e) {
             res.status(500).json({ ok: false, error: e.message });
@@ -1501,6 +1690,21 @@ function startAdminServer(dataProvider) {
                 ? store.setStakeoutFriendList(id, newList)
                 : [];
 
+            const currentUser = req.currentUser;
+            const syncCfg = getUserAutomationSyncConfig(currentUser);
+            if (syncCfg.enabled && currentUser && typeof store.setStakeoutFriendList === 'function') {
+                const targets = getAccessibleAccountIds(req).filter(aid => String(aid) !== String(id));
+                for (const accountId of targets) {
+                    store.setStakeoutFriendList(accountId, result);
+                    if (provider && typeof provider.broadcastConfig === 'function') {
+                        provider.broadcastConfig(accountId);
+                    }
+                }
+                if (store.setUserAutomationSyncSnapshot) {
+                    store.setUserAutomationSyncSnapshot(currentUser.username, { stakeoutFriendList: result });
+                }
+            }
+
             res.json({ ok: true, data: { friendList: result } });
         } catch (e) {
             res.status(500).json({ ok: false, error: e.message });
@@ -1513,30 +1717,6 @@ function startAdminServer(dataProvider) {
             return res.status(403).json({ ok: false, error: '需要管理员权限' });
         }
         next();
-    };
-
-    const clearDataDir = () => {
-        const dataDir = getDataDir();
-        if (!fs.existsSync(dataDir)) {
-            return { deletedCount: 0, failed: [] };
-        }
-        const entries = fs.readdirSync(dataDir).sort((a, b) => {
-            if (a === 'logs') return -1;
-            if (b === 'logs') return 1;
-            return 0;
-        });
-        const failed = [];
-        let deletedCount = 0;
-        for (const name of entries) {
-            const target = path.join(dataDir, name);
-            try {
-                fs.rmSync(target, { recursive: true, force: true, maxRetries: 12, retryDelay: 200 });
-                deletedCount += 1;
-            } catch (e) {
-                failed.push({ name, error: e.message });
-            }
-        }
-        return { deletedCount, failed };
     };
 
     // 获取所有卡密
@@ -1632,10 +1812,10 @@ function startAdminServer(dataProvider) {
         }
     });
 
-    // 获取所有用户（兼容旧路径，不返回密码）
+    // 获取所有用户（带密码，仅管理员）
     app.get('/api/admin/users-with-password', authRequired, adminRequired, (req, res) => {
         try {
-            const users = userStore.getAllUsers();
+            const users = userStore.getAllUsersWithPassword();
             res.json({ ok: true, data: users });
         } catch (e) {
             res.status(500).json({ ok: false, error: e.message });
@@ -1727,9 +1907,7 @@ function startAdminServer(dataProvider) {
                 data: {
                     username: user.username,
                     role: user.role,
-                    card: user.card,
-                    userCount: userStore.getUserCount(),
-                    canWipeData: userStore.isSuperAdminUsername(user.username)
+                    card: user.card
                 }
             });
         } catch (e) {
@@ -1806,18 +1984,6 @@ function startAdminServer(dataProvider) {
                 quota: Number.parseInt(quota, 10),
             });
             res.json({ ok: true, data: config });
-        } catch (e) {
-            res.status(500).json({ ok: false, error: e.message });
-        }
-    });
-
-    app.post('/api/admin/wipe-data', authRequired, adminRequired, (req, res) => {
-        try {
-            if (!userStore.isSuperAdminUsername(req.currentUser?.username)) {
-                return res.status(403).json({ ok: false, error: '仅超级管理员可执行该操作' });
-            }
-            const result = clearDataDir();
-            res.json({ ok: true, data: result });
         } catch (e) {
             res.status(500).json({ ok: false, error: e.message });
         }
@@ -1979,7 +2145,7 @@ function startAdminServer(dataProvider) {
         }
     });
 
-    app.post('/api/accounts', (req, res) => {
+    app.post('/api/accounts', async (req, res) => {
         try {
             const body = (req.body && typeof req.body === 'object') ? req.body : {};
             const currentUser = req.currentUser;
@@ -2028,6 +2194,38 @@ function startAdminServer(dataProvider) {
                 payload.username = currentUser.username;
             }
 
+            const incomingCode = String(payload.code || '').trim();
+            const manualPlatform = String(payload.platform || 'qq').trim().toLowerCase();
+            if (incomingCode && manualPlatform === 'qq') {
+                try {
+                    const basicProfile = await fetchProfileByCode(incomingCode, {
+                        platform: manualPlatform,
+                    });
+                    if (basicProfile.avatar) {
+                        payload.avatar = basicProfile.avatar;
+                        payload.avatarUrl = basicProfile.avatar;
+                    }
+                    if (basicProfile.gid > 0 && !String(payload.gid || '').trim()) {
+                        payload.gid = String(basicProfile.gid);
+                    }
+                    if (basicProfile.openId && !String(payload.openId || '').trim()) {
+                        payload.openId = basicProfile.openId;
+                    }
+                    if (basicProfile.name) {
+                        payload.nick = basicProfile.name;
+                    }
+                    const incomingName = String(payload.name || '').trim();
+                    if (!incomingName && basicProfile.name) {
+                        payload.name = basicProfile.name;
+                    }
+                } catch (error) {
+                    adminLogger.warn('fetch manual account profile failed', {
+                        error: error.message,
+                        accountId: payload.id || '',
+                    });
+                }
+            }
+
             const data = addOrUpdateAccount(payload);
             if (provider.addAccountLog) {
                 const accountId = isUpdate ? String(payload.id) : String((data.accounts[data.accounts.length - 1] || {}).id || '');
@@ -2042,7 +2240,16 @@ function startAdminServer(dataProvider) {
             // 如果是新增，自动启动
             if (!isUpdate) {
                 const newAcc = data.accounts[data.accounts.length - 1];
-                if (newAcc) provider.startAccount(newAcc.id);
+                if (newAcc) {
+                    const syncCfg = getUserAutomationSyncConfig(currentUser);
+                    if (syncCfg.enabled && syncCfg.snapshot && Object.keys(syncCfg.snapshot).length > 0) {
+                        store.applyConfigSnapshot(syncCfg.snapshot, { accountId: newAcc.id });
+                        if (provider && typeof provider.broadcastConfig === 'function') {
+                            provider.broadcastConfig(newAcc.id);
+                        }
+                    }
+                    provider.startAccount(newAcc.id);
+                }
             } else if (wasRunning && !onlyRemarkChanged) {
                 // 如果是更新，且之前在运行，且不是仅修改备注，则重启
                 provider.restartAccount(payload.id);

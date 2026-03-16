@@ -20,18 +20,6 @@ const loading = ref(false)
 const oauthLoading = ref(false)
 const oauthEnabled = ref(false)
 
-function showUserDisclaimer() {
-  const encoded = '5pys6aG555uu5byA5rqQ77yM5L2c6ICFUVHvvJoyNzEwNjA0OTE5CuS7heeUqOS6juWtpuS5oOS6pOa1gQrlpoLmnInnlpHpl67lj6/ogZTns7vkvZzogIXliKDpmaTnm7jlhbPotYTmupAK6Iul6KKr55So5LqO5ZWG55So77yM6K+35Yu/6IGU57O75L2c6ICF5o+Q5L6b5ZSu5ZCO5pSv5oyB'
-  const binary = window.atob(encoded)
-  const bytes = Uint8Array.from(binary, c => c.charCodeAt(0))
-  const message = new TextDecoder().decode(bytes)
-  window.alert(message)
-}
-
-function shouldShowUserDisclaimer() {
-  return userStore.userInfo?.role === 'user' && Number(userStore.userInfo?.userCount || 0) >= 12
-}
-
 onMounted(async () => {
   const oauthToken = route.query.oauth_token as string
   const oauthUser = route.query.oauth_user as string
@@ -49,16 +37,7 @@ onMounted(async () => {
       const res = await api.post('/api/oauth/token-login', { token: oauthToken }, { silent: true })
       if (res.data.ok) {
         userStore.token = res.data.data.token
-        userStore.userInfo = {
-          username: res.data.data.user?.username || '',
-          role: res.data.data.role || res.data.data.user?.role || 'user',
-          card: res.data.data.card ?? res.data.data.user?.card ?? null,
-          userCount: res.data.data.userCount ?? res.data.data.user?.userCount,
-          canWipeData: res.data.data.user?.canWipeData,
-        }
-        if (shouldShowUserDisclaimer()) {
-          showUserDisclaimer()
-        }
+        userStore.userInfo = res.data.data.user
         router.push('/')
       }
       else {
@@ -90,22 +69,19 @@ async function handleSubmit() {
   error.value = ''
   success.value = ''
 
+  // 验证账号密码必须同时输入或同时不输入
+  const hasUsername = username.value.trim()
+  const hasPassword = password.value.trim()
+  if ((hasUsername && !hasPassword) || (!hasUsername && hasPassword)) {
+    error.value = '账号和密码必须同时输入'
+    loading.value = false
+    return
+  }
+
   try {
     if (isLogin.value) {
-      const loginUsername = username.value.trim()
-      const loginPassword = password.value.trim()
-      if (!loginUsername || !loginPassword) {
-        error.value = '用户名和密码都不能为空'
-        loading.value = false
-        return
-      }
-      username.value = loginUsername
-      password.value = loginPassword
-      const result = await userStore.login(loginUsername, loginPassword)
+      const result = await userStore.login(username.value, password.value)
       if (result.ok) {
-        if (shouldShowUserDisclaimer()) {
-          showUserDisclaimer()
-        }
         router.push('/')
       }
       else {

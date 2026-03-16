@@ -40,28 +40,38 @@ function get2x2SlaveIds(land: any): number[] {
 
 function buildMobileLayout(lands: any[]): any[] {
   const cells: any[] = []
-  const skipIds = new Set<number>()
-
-  for (let i = 1; i <= TOTAL_LANDS; i++) {
-    if (skipIds.has(i))
-      continue
-
-    const land = getLandById(lands, i)
-    if (!land) {
-      cells.push({ type: 'empty', id: i })
-      continue
-    }
-
+  const slaveIds = new Set<number>()
+  for (const land of lands) {
     if (is2x2Master(land)) {
-      const slaveIds = get2x2SlaveIds(land)
-      slaveIds.forEach(id => skipIds.add(id))
-      cells.push({ type: '2x2', land, slaveIds })
+      for (const id of get2x2SlaveIds(land))
+        slaveIds.add(Number(id))
     }
-    else if (land?.occupiedByMaster) {
-      continue
-    }
-    else {
-      cells.push({ type: 'normal', land })
+  }
+
+  for (let row = 0; row < 6; row++) {
+    for (let col = 3; col >= 0; col--) {
+      const landId = (row * 4) + (col + 1)
+      if (landId > TOTAL_LANDS)
+        continue
+      if (slaveIds.has(landId))
+        continue
+
+      const land = getLandById(lands, landId)
+      if (!land) {
+        cells.push({ type: 'empty', id: landId })
+        continue
+      }
+
+      if (is2x2Master(land)) {
+        const occupiedIds = get2x2SlaveIds(land)
+        cells.push({ type: '2x2', land, slaveIds: occupiedIds })
+      }
+      else if (land?.occupiedByMaster) {
+        continue
+      }
+      else {
+        cells.push({ type: 'normal', land })
+      }
     }
   }
 

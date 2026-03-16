@@ -117,7 +117,7 @@ onUnmounted(() => {
           <div class="i-carbon-grid text-xl" />
           土地详情
         </h3>
-        <div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+        <div class="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
           <button
             v-for="op in operations"
             :key="op.type"

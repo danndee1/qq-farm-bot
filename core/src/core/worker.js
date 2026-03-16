@@ -8,7 +8,7 @@ const { getLevelExpProgress } = require('../config/gameConfig');
 const { getAutomation, getPreferredSeed, getConfigSnapshot, applyConfigSnapshot } = require('../models/store');
 const { checkAndClaimEmails } = require('../services/email');
 const { getEmailDailyState } = require('../services/email');
-const { checkFarm, startFarmCheckLoop, stopFarmCheckLoop, refreshFarmCheckLoop, getLandsDetail, getAvailableSeeds, runFarmOperation, runFertilizerByConfig, loadDailyHarvestState } = require('../services/farm');
+const { checkFarm, startFarmCheckLoop, stopFarmCheckLoop, refreshFarmCheckLoop, getLandsDetail, getAvailableSeeds, runFarmOperation, runFastHarvestStandalone, runFertilizerByConfig, loadDailyHarvestState } = require('../services/farm');
 const { checkFriends, startFriendCheckLoop, stopFriendCheckLoop, refreshFriendCheckLoop, runBadOnceOnStartup, isHelpExpLimitReached, getFriendsList, getFriendLandsDetail, doFriendOperation } = require('../services/friend');
 const { getInteractRecords } = require('../services/interact');
 const { processInviteCodes } = require('../services/invite');
@@ -18,7 +18,7 @@ const { performDailyOpenServerGift, getOpenServerDailyState } = require('../serv
 const { performDailyVipGift, getVipDailyState } = require('../services/qqvip');
 const { createScheduler, getSchedulerRegistrySnapshot } = require('../services/scheduler');
 const { performDailyShare, getShareDailyState } = require('../services/share');
-const { setInitialValues, resetSessionGains, recordOperation } = require('../services/stats');
+const { setInitialValues, resetSessionGains, resetUptime, recordOperation } = require('../services/stats');
 const { initStatusBar, setStatusPlatform, statusData } = require('../services/status');
 const { setRecordGoldExpHook } = require('../services/status');
 const { cleanupTaskSystem, checkAndClaimTasks, getTaskClaimDailyState, getTaskDailyStateLikeApp, getGrowthTaskStateLikeApp } = require('../services/task');
@@ -223,17 +223,28 @@ async function runFarmTick(auto) {
         CONFIG.farmCheckIntervalMax || CONFIG.farmCheckInterval || 2000
     );
     try {
-        if (auto.farm) await checkFarm();
-        // 强制领取任务奖励，不用开关控制
+        await runFastHarvestStandalone();
+        if (auto.farm) {
+            await checkFarm();
+        } else {
+            await runFarmOperation('maintain');
+        }
+    } catch {
+        // ignore
+    } finally {
+        nextFarmRunAt = Date.now() + farmMs;
+        farmTaskRunning = false;
+    }
+}
+
+async function runFarmFollowupTick(auto) {
+    try {
         await checkAndClaimTasks();
         if (auto.email) await checkAndClaimEmails();
         if (auto.fertilizer_gift) await openFertilizerGiftPacksSilently();
         if (auto.fertilizer_buy) await autoBuyOrganicFertilizer();
     } catch {
         // ignore
-    } finally {
-        nextFarmRunAt = Date.now() + farmMs;
-        farmTaskRunning = false;
     }
 }
 
@@ -311,8 +322,9 @@ async function runUnifiedTick() {
     const auto = getAutomation();
     // 串行执行而非并行，避免并发请求过多导致超时
     if (dueFarm) await runFarmTick(auto);
-    if (dueHelp) await runHelpTick(auto);
     if (dueSteal) await runStealTick(auto);
+    if (dueHelp) await runHelpTick(auto);
+    if (dueFarm) await runFarmFollowupTick(auto);
 }
 
 function scheduleUnifiedNextTick() {
@@ -514,10 +526,11 @@ async function startBot(config) {
         } catch {
             // ignore
         }
-        // 登录成功后，以当前金币/经验/点券作为统计基线，并清空会话增量
+        // 登录成功后，以当前金币/经验/点券作为统计基线，并清空会话增量/在线时长
         const latest = getUserState();
         setInitialValues(Number(latest.gold || 0), Number(latest.exp || 0), Number(latest.coupon || 0));
         resetSessionGains();
+        resetUptime();
 
         // 加载每日收获计数状态
         loadDailyHarvestState();

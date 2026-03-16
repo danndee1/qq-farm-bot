@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { useIntervalFn } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AccountModal from '@/components/AccountModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import { getPlatformClass, getPlatformLabel, useAccountStore } from '@/stores/account'
+import { useUserStore } from '@/stores/user'
 
 const router = useRouter()
 const accountStore = useAccountStore()
+const userStore = useUserStore()
 const { accounts, loading, currentAccountId } = storeToRefs(accountStore)
 
 const showModal = ref(false)
@@ -17,6 +19,30 @@ const showDeleteConfirm = ref(false)
 const deleteLoading = ref(false)
 const editingAccount = ref<any>(null)
 const accountToDelete = ref<any>(null)
+
+const isAccountOpsDisabled = computed(() => !userStore.isAdmin && userStore.isExpired)
+const quotaLimit = computed(() => {
+  const quota = userStore.userCard?.quota
+  if (quota === undefined || quota === null)
+    return 3
+  return quota
+})
+const isOverQuota = computed(() => {
+  if (userStore.isAdmin)
+    return false
+  const limit = quotaLimit.value
+  if (limit === -1)
+    return false
+  return accounts.value.length >= limit
+})
+const isAddAccountDisabled = computed(() => isAccountOpsDisabled.value || isOverQuota.value)
+const addAccountDisabledReason = computed(() => {
+  if (isAccountOpsDisabled.value)
+    return '账号已到期，无法添加账号'
+  if (isOverQuota.value)
+    return '已超过配额，无法添加账号'
+  return ''
+})
 
 onMounted(() => {
   accountStore.fetchAccounts()
@@ -78,6 +104,30 @@ function selectAccount(account: any) {
     return
   accountStore.selectAccount(String(account.id))
 }
+
+function getAccountAvatar(account: any) {
+  const avatar = String(account?.avatar || account?.avatarUrl || '').trim()
+  if (avatar)
+    return avatar
+
+  const uin = String(account?.uin || account?.qq || '').trim()
+  if (uin)
+    return `https://q1.qlogo.cn/g?b=qq&nk=${uin}&s=100`
+
+  return ''
+}
+
+function getAccountBindingText(account: any) {
+  const uin = String(account?.uin || account?.qq || '').trim()
+  if (uin)
+    return uin
+
+  const gid = String(account?.gid || '').trim()
+  if (gid)
+    return `GID:${gid}`
+
+  return '未绑定'
+}
 </script>
 
 <template>
@@ -88,6 +138,8 @@ function selectAccount(account: any) {
       </h1>
       <BaseButton
         variant="primary"
+        :disabled="isAddAccountDisabled"
+        :title="addAccountDisabledReason"
         @click="openAddModal"
       >
         <div class="i-carbon-add mr-2" />
@@ -107,6 +159,8 @@ function selectAccount(account: any) {
       </p>
       <BaseButton
         variant="text"
+        :disabled="isAddAccountDisabled"
+        :title="addAccountDisabledReason"
         @click="openAddModal"
       >
         立即添加
@@ -126,7 +180,7 @@ function selectAccount(account: any) {
         <div class="mb-4 flex items-start justify-between">
           <div class="flex items-center gap-3">
             <div class="h-12 w-12 flex items-center justify-center overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
-              <img v-if="acc.uin" :src="`https://q1.qlogo.cn/g?b=qq&nk=${acc.uin}&s=100`" class="h-full w-full object-cover">
+              <img v-if="getAccountAvatar(acc)" :src="getAccountAvatar(acc)" class="h-full w-full object-cover">
               <div v-else class="i-carbon-user text-2xl text-gray-400" />
             </div>
             <div>
@@ -142,7 +196,7 @@ function selectAccount(account: any) {
                   {{ getPlatformLabel(acc.platform) }}
                 </span>
                 <span class="text-sm text-gray-500">
-                  {{ acc.uin || '未绑定' }}
+                  {{ getAccountBindingText(acc) }}
                 </span>
               </div>
             </div>
@@ -153,6 +207,8 @@ function selectAccount(account: any) {
               size="sm"
               class="w-20 border rounded-full shadow-sm transition-all duration-500 ease-in-out active:scale-95"
               :class="acc.running ? 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100 focus:ring-red-500 active:border-red-300 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30 dark:focus:ring-red-500 dark:active:border-red-700' : 'border-green-200 bg-green-50 text-green-600 hover:bg-green-100 focus:ring-green-500 active:border-green-300 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/30 dark:focus:ring-green-500 dark:active:border-green-700'"
+              :disabled="!acc.running && isAccountOpsDisabled"
+              :title="!acc.running && isAccountOpsDisabled ? '账号已到期，无法启动账号' : ''"
               @click="toggleAccount(acc)"
             >
               <div :class="acc.running ? 'i-carbon-stop-filled' : 'i-carbon-play-filled'" class="mr-1" />

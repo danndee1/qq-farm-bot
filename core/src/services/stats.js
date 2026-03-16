@@ -1,8 +1,18 @@
-const process = require('node:process');
 /**
  * 统计工具 - 重构版
  * 基于状态变化累加收益，而非依赖初始值快照
  */
+
+// 账号在线时长（按 worker 内连接状态累计；避免与主进程 uptime 同步）
+let lastConnected = false;
+let onlineSinceMs = 0;
+let onlineAccumulatedSec = 0;
+
+function resetUptime() {
+    lastConnected = false;
+    onlineSinceMs = 0;
+    onlineAccumulatedSec = 0;
+}
 
 // 操作计数
 const operations = {
@@ -139,6 +149,23 @@ function getStats(statusData, userState, connected, limits) {
     const statusObj = (statusData && typeof statusData === 'object') ? statusData : {};
     const userObj = (userState && typeof userState === 'object') ? userState : {};
 
+    const nowMs = Date.now();
+    const isConnected = !!connected;
+    if (isConnected && !lastConnected) {
+        onlineSinceMs = nowMs;
+    } else if (!isConnected && lastConnected) {
+        if (onlineSinceMs > 0) {
+            onlineAccumulatedSec += (nowMs - onlineSinceMs) / 1000;
+        }
+        onlineSinceMs = 0;
+    }
+    lastConnected = isConnected;
+
+    const uptimeSec = Math.max(
+        0,
+        Math.floor(onlineAccumulatedSec + (isConnected && onlineSinceMs > 0 ? (nowMs - onlineSinceMs) / 1000 : 0)),
+    );
+
     // 优先使用 network 层 userState（通常是最新实时值），statusData 仅作为兜底
     const rawGold = (userObj.gold !== null && userObj.gold !== undefined) ? userObj.gold : statusObj.gold;
     const rawExp = (userObj.exp !== null && userObj.exp !== undefined) ? userObj.exp : statusObj.exp;
@@ -166,7 +193,7 @@ function getStats(statusData, userState, connected, limits) {
             exp: currentExp,
             platform: statusObj.platform || userObj.platform || 'qq',
         },
-        uptime: process.uptime(),
+        uptime: uptimeSec,
         operations: operationsSnapshot,
         sessionExpGained: session.expGained,
         sessionGoldGained: session.goldGained,
@@ -184,5 +211,6 @@ module.exports = {
     setInitialValues, // 兼容旧接口
     recordGoldExp,    // 兼容旧接口
     resetSessionGains,
+    resetUptime,
     getStats,
 };

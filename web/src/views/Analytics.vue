@@ -306,29 +306,29 @@ function formatGrowTime(seconds: any) {
 </script>
 
 <template>
-  <div class="h-full flex flex-col p-4">
+  <div class="space-y-4">
     <!-- 标签页切换 -->
-    <div class="mb-4 flex space-x-2">
+    <div class="flex gap-2 border-b border-gray-200 dark:border-gray-700">
       <button
-        class="rounded-lg px-4 py-2 font-medium transition-colors"
+        class="border-b-2 px-4 py-2 text-sm font-medium transition-colors"
         :class="activeTab === 'crops'
-          ? 'bg-blue-500 text-white shadow-md'
-          : 'bg-white text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'"
+          ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+          : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
         @click="activeTab = 'crops'"
       >
         <div class="flex items-center space-x-2">
           <div class="i-carbon-sprout h-6 w-6 flex items-center justify-center text-lg" />
-          <span>全部作物信息</span>
+          <span>全部作物</span>
           <span v-if="list.length" class="ml-1 rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700 dark:bg-green-900/50 dark:text-green-300">
             {{ list.length }}
           </span>
         </div>
       </button>
       <button
-        class="rounded-lg px-4 py-2 font-medium transition-colors"
+        class="border-b-2 px-4 py-2 text-sm font-medium transition-colors"
         :class="activeTab === 'blacklist'
-          ? 'bg-blue-500 text-white shadow-md'
-          : 'bg-white text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'"
+          ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+          : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
         @click="activeTab = 'blacklist'"
       >
         <div class="flex items-center space-x-2">
@@ -340,20 +340,20 @@ function formatGrowTime(seconds: any) {
         </div>
       </button>
       <button
-        class="rounded-lg px-4 py-2 font-medium transition-colors"
+        class="border-b-2 px-4 py-2 text-sm font-medium transition-colors"
         :class="activeTab === 'strategy'
-          ? 'bg-blue-500 text-white shadow-md'
-          : 'bg-white text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'"
+          ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+          : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
         @click="activeTab = 'strategy'"
       >
         <div class="flex items-center space-x-2">
           <div class="i-carbon-chart-line h-6 w-6 flex items-center justify-center text-lg" />
-          <span>策略推荐</span>
+          <span>种植策略</span>
         </div>
       </button>
     </div>
 
-    <div class="flex-1 overflow-y-auto">
+    <div>
       <!-- 加载中 -->
       <div v-if="loading" class="flex justify-center py-12">
         <div class="i-svg-spinners-90-ring-with-bg text-4xl text-blue-500" />
@@ -369,10 +369,9 @@ function formatGrowTime(seconds: any) {
         暂无数据
       </div>
 
-      <!-- 全部作物信息 -->
-      <div v-if="activeTab === 'crops' && list.length > 0" class="overflow-hidden border border-gray-200 rounded-lg bg-white shadow dark:border-gray-700 dark:bg-gray-800">
-        <!-- 头部工具栏 -->
-        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-700/50">
+      <div v-else-if="activeTab === 'crops'" class="space-y-4">
+        <!-- 搜索和排序栏 -->
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div class="flex items-center gap-3">
             <div class="i-carbon-sprout text-xl text-green-500" />
             <div>

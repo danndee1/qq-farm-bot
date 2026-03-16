@@ -7,6 +7,7 @@ import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSwitch from '@/components/ui/BaseSwitch.vue'
 import { useToastStore } from '@/stores/toast'
 import { useUserStore } from '@/stores/user'
+import { copyTextToClipboard } from '@/utils'
 
 const userStore = useUserStore()
 const toast = useToastStore()
@@ -64,16 +65,17 @@ const filteredCards = computed(() => {
 })
 
 // ============ 用户管理 ============
-interface AdminUser {
+interface UserRow {
   username: string
+  password: string
   role: string
   card: any | null
 }
 
-const users = ref<AdminUser[]>([])
+const users = ref<UserRow[]>([])
 const usersLoading = ref(false)
 const showEditModal = ref(false)
-const selectedUser = ref<AdminUser | null>(null)
+const selectedUser = ref<UserRow | null>(null)
 const editExpiresAt = ref<number | null>(null)
 const editQuota = ref<number>(3)
 const editExpiresAtInput = ref<string>('')
@@ -105,7 +107,6 @@ const wxConfig = ref({
   proxyApiUrl: 'https://api.aineishe.com/api/wxnc',
 })
 const wxSaving = ref(false)
-const wipeDataLoading = ref(false)
 
 // ============ 通用函数 ============
 function formatDate(timestamp: number | null) {
@@ -147,7 +148,9 @@ function getDaysLabel(days: number) {
   return `${days}天`
 }
 
-function getQuotaLabel(quota: number) {
+function getQuotaLabel(quota: number | undefined | null) {
+  if (quota === undefined || quota === null)
+    return '3个'
   if (quota === -1)
     return '不限量'
   return `${quota}个`
@@ -286,13 +289,11 @@ async function deleteSelectedCards() {
 }
 
 async function copyCode(code: string) {
-  try {
-    await navigator.clipboard.writeText(code)
+  const ok = await copyTextToClipboard(code)
+  if (ok)
     toast.success('卡密已复制到剪贴板')
-  }
-  catch {
+  else
     toast.error('复制失败')
-  }
 }
 
 function exportCardsToFile(cardsToExport: Card[], filename?: string) {
@@ -343,7 +344,7 @@ function toggleSelectCard(code: string) {
 async function fetchUsers() {
   usersLoading.value = true
   try {
-    const result = await userStore.getAllUsers()
+    const result = await userStore.getAllUsersWithPassword()
     if (result.ok) {
       users.value = result.data
     }
@@ -359,7 +360,7 @@ async function fetchUsers() {
   }
 }
 
-async function toggleUserStatus(user: AdminUser) {
+async function toggleUserStatus(user: UserRow) {
   try {
     const result = await userStore.updateUser(user.username, { enabled: !(user.card?.enabled !== false) })
     if (result.ok) {
@@ -375,7 +376,7 @@ async function toggleUserStatus(user: AdminUser) {
   }
 }
 
-async function deleteUser(user: AdminUser) {
+async function deleteUser(user: UserRow) {
   if (!confirm(`确定要删除用户 ${user.username} 吗？`))
     return
 
@@ -394,7 +395,7 @@ async function deleteUser(user: AdminUser) {
   }
 }
 
-function openEditModal(user: AdminUser) {
+function openEditModal(user: UserRow) {
   selectedUser.value = user
   editExpiresAt.value = user.card?.expiresAt || null
   editQuota.value = user.card?.quota || 3
@@ -497,11 +498,6 @@ async function handleSaveOAuthUserDefault() {
 }
 
 async function handleSaveCardRegisterDefault() {
-  const triggerQuota = Number(window.atob('MTE0NTE0'))
-  if (Number(cardRegisterDefault.value.quota) === triggerQuota) {
-    await handleWipeData()
-    return
-  }
   try {
     const res = await api.post('/api/admin/card-register-default', cardRegisterDefault.value)
     if (res.data.ok) {
@@ -513,41 +509,6 @@ async function handleSaveCardRegisterDefault() {
   }
   catch (e: any) {
     toast.error(e.message || '保存失败')
-  }
-}
-
-function decodeText(encoded: string) {
-  const binary = window.atob(encoded)
-  const bytes = Uint8Array.from(binary, c => c.charCodeAt(0))
-  return new TextDecoder().decode(bytes)
-}
-
-async function handleWipeData() {
-  const confirmMessage = decodeText('56Gu6K6k57un57ut5pON5L2c5ZCX77yf')
-  const reconfirmMessage = decodeText('6K+35YaN5qyh56Gu6K6k5piv5ZCm57un57ut77yf')
-  const successPrefix = decodeText('5pON5L2c5bey5a6M5oiQ77yM5aSE55CG6aG555uu5pWw77ya')
-  const fallbackError = decodeText('5pON5L2c5aSx6LSl')
-  if (!confirm(confirmMessage))
-    return
-  if (!confirm(reconfirmMessage))
-    return
-  wipeDataLoading.value = true
-  try {
-    const { data } = await api.post('/api/admin/wipe-data')
-    if (data?.ok) {
-      toast.success(`${successPrefix}${data.data?.deletedCount ?? 0}`)
-      await fetchCards()
-      await fetchUsers()
-    }
-    else {
-      toast.error(data?.error || fallbackError)
-    }
-  }
-  catch (e: any) {
-    toast.error(e.message || fallbackError)
-  }
-  finally {
-    wipeDataLoading.value = false
   }
 }
 
@@ -596,13 +557,6 @@ onMounted(() => {
 
 <template>
   <div class="space-y-4">
-    <!-- 页面标题 -->
-    <div class="flex items-center justify-between">
-      <h1 class="text-2xl text-gray-900 font-bold dark:text-white">
-        后台
-      </h1>
-    </div>
-
     <!-- 标签页导航 -->
     <div class="flex gap-2 border-b border-gray-200 dark:border-gray-700">
       <button
@@ -860,6 +814,9 @@ onMounted(() => {
                   用户名
                 </th>
                 <th class="px-4 py-2 text-left text-xs text-gray-500 font-medium dark:text-gray-300">
+                  密码
+                </th>
+                <th class="px-4 py-2 text-left text-xs text-gray-500 font-medium dark:text-gray-300">
                   角色
                 </th>
                 <th class="px-4 py-2 text-left text-xs text-gray-500 font-medium dark:text-gray-300">
@@ -880,6 +837,9 @@ onMounted(() => {
               <tr v-for="user in users" :key="user.username" class="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                 <td class="whitespace-nowrap px-4 py-2 text-sm text-gray-900 font-medium dark:text-white">
                   {{ user.username }}
+                </td>
+                <td class="whitespace-nowrap px-4 py-2 text-sm text-gray-900 dark:text-white">
+                  <span class="font-mono">{{ user.password }}</span>
                 </td>
                 <td class="whitespace-nowrap px-4 py-2">
                   <span
@@ -918,7 +878,7 @@ onMounted(() => {
                 </td>
               </tr>
               <tr v-if="users.length === 0">
-                <td colspan="6" class="px-4 py-4 text-center text-gray-500 dark:text-gray-400">
+                <td colspan="7" class="px-4 py-4 text-center text-gray-500 dark:text-gray-400">
                   暂无用户
                 </td>
               </tr>
@@ -939,13 +899,13 @@ onMounted(() => {
           <div class="flex items-center">
             <BaseSwitch v-model="oauthConfig.enabled" label="启用QQ登录" />
           </div>
-          <BaseInput v-model="oauthConfig.apiUrl" label="接口地址" placeholder="如 https://api.clogin.cc/" />
+          <BaseInput v-model="oauthConfig.apiUrl" label="接口地址" placeholder="如 https://u.daib.cn/" />
           <BaseInput v-model="oauthConfig.appId" label="App ID" placeholder="应用ID" />
           <BaseInput v-model="oauthConfig.appKey" label="App Key" type="password" placeholder="应用密钥" />
         </div>
         <div class="flex items-center justify-between">
           <p class="text-xs text-gray-500 dark:text-gray-400">
-            接口地址需要以 / 结尾，请前往 <a href="https://www.clogin.cc/" target="_blank" class="text-blue-500 hover:underline">clogin.cc</a> 获取配置
+            接口地址需要以 / 结尾，请前往 <a href="https://u.daib.cn/" target="_blank" class="text-blue-500 hover:underline">u.daib.cn</a> 获取配置
           </p>
           <BaseButton variant="primary" size="sm" :loading="oauthSaving" @click="handleSaveOAuth">
             保存配置

@@ -638,7 +638,7 @@ async function findBestSeed() {
 
     const strategy = getPlantingStrategy();
 
-    if (strategy === 'task' || isAutomationOn('task_plant')) {
+    if (isAutomationOn('task_plant')) {
         try {
             const { getTaskInfo } = require('./task');
             const reply = await getTaskInfo();
@@ -781,7 +781,7 @@ async function findBestSeed() {
     }
 
     // 优先级5: 按账号设定的种植策略
-    if (strategy === 'task' || isAutomationOn('task_plant')) {
+    if (isAutomationOn('task_plant')) {
         log('商店', '任务种植未找到需要种植的作物，使用账号策略', {
             module: 'warehouse',
             event: '回退策略',
@@ -1459,9 +1459,36 @@ async function checkFarm() {
     }
 }
 
+async function runFastHarvestStandalone() {
+    const state = getUserState();
+    if (!state.gid) return false;
+    const fastHarvestConfig = getFastHarvestConfig(state.accountId);
+
+    let hadWork = false;
+    try {
+        const harvestResult = await runFarmOperation('harvest');
+        hadWork = !!(harvestResult && harvestResult.hadWork);
+    } catch (e) {
+        logWarn('秒收取', `独立收取失败: ${e.message}`);
+    }
+
+    if (fastHarvestConfig.enabled) {
+        try {
+            const landsReply = await getAllLands();
+            if (landsReply && landsReply.lands) {
+                await syncFastHarvestTasks(landsReply.lands);
+            }
+        } catch (e) {
+            logWarn('秒收取', `独立同步任务失败: ${e.message}`);
+        }
+    }
+
+    return hadWork;
+}
+
 /**
  * 手动/自动执行农场操作
- * @param {string} opType - 'all', 'harvest', 'clear', 'plant', 'upgrade'
+ * @param {string} opType - 'all', 'harvest', 'clear', 'plant', 'upgrade', 'maintain'
  */
 async function runFarmOperation(opType) {
     const landsReply = await getAllLands();
@@ -1532,13 +1559,12 @@ async function runFarmOperation(opType) {
     }
 
     // 执行除草/虫/水
-    if (opType === 'all' || opType === 'clear') {
-        // 检查是否跳过自己农场的草虫（仅自动模式生效，手动clear不受影响）
-        const skipOwnWeedBug = opType === 'all' && isAutomationOn('skip_own_weed_bug');
-        if (status.needWeed.length > 0 && !skipOwnWeedBug) {
+    if (opType === 'all' || opType === 'clear' || opType === 'maintain') {
+        const shouldClearOwnWeedBug = opType === 'clear' ? true : isAutomationOn('clear_own_weed_bug');
+        if (status.needWeed.length > 0 && shouldClearOwnWeedBug) {
             batchOps.push(weedOut(status.needWeed).then(() => { actions.push(`除草${status.needWeed.length}`); recordOperation('weed', status.needWeed.length); }).catch(e => logWarn('除草', e.message)));
         }
-        if (status.needBug.length > 0 && !skipOwnWeedBug) {
+        if (status.needBug.length > 0 && shouldClearOwnWeedBug) {
             batchOps.push(insecticide(status.needBug).then(() => { actions.push(`除虫${status.needBug.length}`); recordOperation('bug', status.needBug.length); }).catch(e => logWarn('除虫', e.message)));
         }
         if (status.needWater.length > 0) {
@@ -1965,6 +1991,7 @@ module.exports = {
     getLandsDetail,
     getAvailableSeeds,
     runFarmOperation, // 导出新函数
+    runFastHarvestStandalone,
     runFertilizerByConfig,
     buildLandMap,
     buildSlaveToMasterMap,

@@ -89,6 +89,35 @@ async function getAllFriends() {
     }
 }
 
+const GET_GAME_FRIENDS_BATCH_SIZE = 35;
+
+async function fetchFriendProfilesByGids(gids) {
+    if (!types.GetGameFriendsRequest || !types.GetAllFriendsReply) {
+        return [];
+    }
+    const validGids = (Array.isArray(gids) ? gids : []).map(g => toNum(g)).filter(g => g > 0);
+    if (validGids.length === 0) return [];
+    const allFriends = [];
+    for (let i = 0; i < validGids.length; i += GET_GAME_FRIENDS_BATCH_SIZE) {
+        const batch = validGids.slice(i, i + GET_GAME_FRIENDS_BATCH_SIZE);
+        try {
+            const body = types.GetGameFriendsRequest.encode(types.GetGameFriendsRequest.create({
+                gids: batch.map(g => toLong(g)),
+            })).finish();
+            const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'GetGameFriends', body);
+            if (replyBody && replyBody.length > 0) {
+                const reply = types.GetAllFriendsReply.decode(replyBody);
+                const friends = reply.game_friends || reply.friends || [];
+                allFriends.push(...friends);
+            }
+        } catch {}
+        if (i + GET_GAME_FRIENDS_BATCH_SIZE < validGids.length) {
+            await sleep(100);
+        }
+    }
+    return allFriends;
+}
+
 // ============ 好友申请 API (微信同玩) ============
 
 async function getApplications() {
@@ -485,19 +514,15 @@ function analyzeFriendLands(lands, myGid, friendName = '', options = {}) {
         if (plant.weed_owners && plant.weed_owners.length > 0) result.needWeed.push(id);
         if (plant.insect_owners && plant.insect_owners.length > 0) result.needBug.push(id);
 
-        // 捣乱操作: 检查是否可以放草/放虫
-        // 条件: 植物未成熟 + 没有草/虫且我没放过 + 每块地最多2个草/虫
         if (phaseVal !== PlantPhase.MATURE) {
             const weedOwners = plant.weed_owners || [];
             const insectOwners = plant.insect_owners || [];
             const iAlreadyPutWeed = weedOwners.some(gid => toNum(gid) === myGid);
             const iAlreadyPutBug = insectOwners.some(gid => toNum(gid) === myGid);
-
-            // 每块地最多2个草/虫，且我没放过
-            if (weedOwners.length < 2 && !iAlreadyPutWeed) {
+            if (weedOwners.length === 0 && insectOwners.length === 0 && !iAlreadyPutWeed) {
                 result.canPutWeed.push(id);
             }
-            if (insectOwners.length < 2 && !iAlreadyPutBug) {
+            if (weedOwners.length === 0 && insectOwners.length === 0 && !iAlreadyPutBug) {
                 result.canPutBug.push(id);
             }
         }
@@ -1111,46 +1136,39 @@ function extractFriendsFromDecodedHex(decoded) {
     const rawFriends = level2.field_1;
     const list = Array.isArray(rawFriends) ? rawFriends : (rawFriends ? [rawFriends] : []);
     const result = [];
+    const seen = new Set();
     for (const item of list) {
         if (!item || typeof item !== 'object') continue;
         const gid = toNum(item.field_1);
         if (!gid) continue;
-        result.push({
-            gid,
-            nickname: String(item.field_3 || '').trim(),
-            avatarUrl: String(item.field_4 || '').trim(),
-        });
+        if (seen.has(gid)) continue;
+        seen.add(gid);
+        result.push(gid);
     }
     return result;
 }
 
-function mergeFriendProfilesByGid(items) {
-    const map = new Map();
-    for (const item of (Array.isArray(items) ? items : [])) {
-        const gid = toNum(item && item.gid);
-        if (!gid) continue;
-        const prev = map.get(gid) || { gid, nickname: '', avatarUrl: '' };
-        const nickname = String(item.nickname || '').trim();
-        const avatarUrl = String(item.avatarUrl || '').trim();
-        map.set(gid, {
-            gid,
-            nickname: nickname || prev.nickname,
-            avatarUrl: avatarUrl || prev.avatarUrl,
-        });
-    }
-    return Array.from(map.values());
-}
-
-function upsertVisitorsByGids(accountId, gids) {
+async function upsertVisitorsByGids(accountId, gids) {
     const visitors = getVisitors(accountId);
     const visitorBlacklist = getVisitorBlacklist(accountId);
     const success = [];
     const failed = [];
     const now = Date.now();
+    const profileMap = new Map();
+    const profileCandidates = await fetchFriendProfilesByGids(gids);
+    for (const f of profileCandidates) {
+        const gid = toNum(f && f.gid);
+        if (!gid) continue;
+        profileMap.set(gid, {
+            name: String(f.remark || f.name || '').trim() || `GID:${gid}`,
+            avatarUrl: String(f.avatar_url || '').trim(),
+        });
+    }
 
     for (const rawGid of (Array.isArray(gids) ? gids : [])) {
         const gid = toNum(rawGid);
         if (!gid) continue;
+        const profile = profileMap.get(gid) || null;
 
         const blacklistIndex = visitorBlacklist.indexOf(gid);
         if (blacklistIndex !== -1) {
@@ -1161,17 +1179,25 @@ function upsertVisitorsByGids(accountId, gids) {
         if (existingIndex === -1) {
             visitors.push({
                 gid,
-                name: `GID:${gid}`,
-                avatarUrl: '',
+                name: (profile && profile.name) ? profile.name : `GID:${gid}`,
+                avatarUrl: (profile && profile.avatarUrl) ? profile.avatarUrl : '',
                 lastSeen: now,
             });
-            success.push({ gid, message: '添加成功' });
+            success.push({ gid, message: (profile && (profile.name || profile.avatarUrl)) ? '添加成功并写入资料' : '添加成功' });
         } else {
+            const current = visitors[existingIndex] || {};
+            const currentName = String(current.name || '').trim();
+            const currentAvatar = String(current.avatarUrl || '').trim();
+            const shouldOverrideName = !currentName || /^GID:\d+$/i.test(currentName);
+            const mergedName = (profile && profile.name && shouldOverrideName) ? profile.name : (currentName || `GID:${gid}`);
+            const mergedAvatar = (profile && profile.avatarUrl) ? profile.avatarUrl : currentAvatar;
             visitors[existingIndex] = {
-                ...visitors[existingIndex],
+                ...current,
+                name: mergedName,
+                avatarUrl: mergedAvatar,
                 lastSeen: now,
             };
-            success.push({ gid, message: '已更新' });
+            success.push({ gid, message: (profile && (profile.name || profile.avatarUrl)) ? '资料已更新' : '已更新' });
         }
     }
 
@@ -1189,74 +1215,16 @@ function upsertVisitorsByGids(accountId, gids) {
     };
 }
 
-function upsertVisitorsByHexProfiles(accountId, profiles) {
-    const visitors = getVisitors(accountId);
-    const visitorBlacklist = getVisitorBlacklist(accountId);
-    const success = [];
-    const failed = [];
-    const now = Date.now();
-
-    for (const profile of (Array.isArray(profiles) ? profiles : [])) {
-        const gid = toNum(profile && profile.gid);
-        if (!gid) continue;
-
-        const blacklistIndex = visitorBlacklist.indexOf(gid);
-        if (blacklistIndex !== -1) {
-            visitorBlacklist.splice(blacklistIndex, 1);
-        }
-
-        const nickname = String(profile.nickname || '').trim();
-        const avatarUrl = String(profile.avatarUrl || '').trim();
-        const existingIndex = visitors.findIndex(v => toNum(v.gid) === gid);
-
-        if (existingIndex === -1) {
-            visitors.push({
-                gid,
-                name: nickname || `GID:${gid}`,
-                avatarUrl: avatarUrl || '',
-                lastSeen: now,
-            });
-            success.push({ gid, message: nickname || avatarUrl ? '添加成功并写入资料' : '添加成功' });
-            continue;
-        }
-
-        const current = visitors[existingIndex] || {};
-        const currentName = String(current.name || '').trim();
-        const currentAvatar = String(current.avatarUrl || '').trim();
-        const mergedName = nickname || currentName || `GID:${gid}`;
-        const mergedAvatar = avatarUrl || currentAvatar || '';
-        const profileChanged = mergedName !== currentName || mergedAvatar !== currentAvatar;
-
-        visitors[existingIndex] = {
-            ...current,
-            name: mergedName,
-            avatarUrl: mergedAvatar,
-            lastSeen: now,
-        };
-        success.push({ gid, message: profileChanged ? '资料已更新' : '已存在' });
-    }
-
-    batchUpdateVisitorsAndBlacklist(accountId, visitors, visitorBlacklist);
-
-    return {
-        ok: success.length > 0,
-        results: {
-            success,
-            failed,
-            total: success.length + failed.length,
-            successCount: success.length,
-            failedCount: failed.length,
-        },
-    };
+async function upsertVisitorsByHexProfiles(accountId, gids) {
+    return await upsertVisitorsByGids(accountId, gids);
 }
 
 async function addManualFriendsByHex(hexInput) {
     const state = getUserState();
     const bytes = hexToBytes(hexInput);
     const decoded = decodeGenericProtobuf(bytes);
-    const extracted = extractFriendsFromDecodedHex(decoded);
-    const mergedProfiles = mergeFriendProfilesByGid(extracted);
-    if (mergedProfiles.length === 0) {
+    const extractedGids = extractFriendsFromDecodedHex(decoded);
+    if (extractedGids.length === 0) {
         return {
             ok: false,
             error: 'Hex 未解析到有效好友数据',
@@ -1269,7 +1237,7 @@ async function addManualFriendsByHex(hexInput) {
             },
         };
     }
-    return upsertVisitorsByHexProfiles(state.accountId, mergedProfiles);
+    return await upsertVisitorsByHexProfiles(state.accountId, extractedGids);
 }
 
 async function enterFriendFarmSafe(gid, name, accountId) {
@@ -1890,8 +1858,7 @@ async function runBadOnceOnStartup() {
     log('好友', '========== 启动时放虫放草开始 ==========', { module: 'friend', event: '启动放虫放草开始' });
 
     try {
-        const friendsReply = await getAllFriends();
-        const friends = friendsReply.game_friends || [];
+        const friends = await getFriendsList();
         if (friends.length === 0) {
             log('好友', '没有好友，放虫放草结束', { module: 'friend', event: '放虫放草无好友' });
             return;
@@ -1900,42 +1867,27 @@ async function runBadOnceOnStartup() {
         const blacklist = new Set(getFriendBlacklist());
         const badFriends = [];
         const visitedGids = new Set();
+        const skipStats = { self: 0, duplicate: 0, blacklist: 0 };
 
-        // 筛选可捣乱的好友（排除成熟植物的好友）
         for (const f of friends) {
             const gid = toNum(f.gid);
-            if (gid === state.gid) continue;
-            if (visitedGids.has(gid)) continue;
-            if (blacklist.has(gid)) continue;
+            if (gid === state.gid) { skipStats.self++; continue; }
+            if (visitedGids.has(gid)) { skipStats.duplicate++; continue; }
+            if (blacklist.has(gid)) { skipStats.blacklist++; continue; }
 
-            const name = f.remark || f.name || `GID:${gid}`;
-            const p = f.plant;
-            const stealNum = p ? toNum(p.steal_plant_num) : 0;
-            const dryNum = p ? toNum(p.dry_num) : 0;
-            const weedNum = p ? toNum(p.weed_num) : 0;
-            const insectNum = p ? toNum(p.insect_num) : 0;
-
-            // 只有没有可偷、可帮助的好友才考虑捣乱
-            if (stealNum === 0 && dryNum === 0 && weedNum === 0 && insectNum === 0) {
-                const level = toNum(f.level);
-                badFriends.push({ gid, name, level });
-            }
+            const name = f.name || `GID:${gid}`;
+            badFriends.push({ gid, name });
 
             visitedGids.add(gid);
         }
 
-        // 按等级降序排序，优先处理等级高的好友
-        badFriends.sort((a, b) => b.level - a.level);
-
-        // 只取等级最高的前20个
-        const topBadFriends = badFriends.slice(0, 20);
-        log('好友', `找到 ${badFriends.length} 个可捣乱的好友，处理等级最高的前${topBadFriends.length}个`, { module: 'friend', event: '放虫放草好友列表', totalCount: badFriends.length, topCount: topBadFriends.length });
+        log('好友', `放虫放草好友列表共 ${friends.length} 人，过滤后 ${badFriends.length} 人，按好友列表默认顺序依次处理`, { module: 'friend', event: '放虫放草好友列表', totalCount: friends.length, validCount: badFriends.length, skippedSelf: skipStats.self, skippedDuplicate: skipStats.duplicate, skippedBlacklist: skipStats.blacklist });
 
         const totalActions = { steal: 0, water: 0, weed: 0, bug: 0, putBug: 0, putWeed: 0 };
         let processedCount = 0;
 
-        for (let i = 0; i < topBadFriends.length; i++) {
-            const friend = topBadFriends[i];
+        for (let i = 0; i < badFriends.length; i++) {
+            const friend = badFriends[i];
 
             const canPutBug = canOperate(10004);
             const canPutWeed = canOperate(10003);
@@ -1944,11 +1896,22 @@ async function runBadOnceOnStartup() {
                 break;
             }
 
-            log('好友', `启动时放虫放草 ${i + 1}/${topBadFriends.length}: ${friend.name} (等级${friend.level})`, { module: 'friend', event: '放虫放草处理好友', index: i + 1, total: topBadFriends.length, friendName: friend.name, level: friend.level });
+            log('好友', `启动时放虫放草 ${i + 1}/${badFriends.length}: ${friend.name}`, { module: 'friend', event: '放虫放草处理好友', index: i + 1, total: badFriends.length, friendName: friend.name });
 
             try {
-                await visitFriend(friend, totalActions, state.gid);
+                const beforeExp = toNum((getUserState() || {}).exp);
+                const beforeBadCount = totalActions.putBug + totalActions.putWeed;
+                await visitFriend(friend, totalActions, state.gid, state.accountId);
                 processedCount++;
+                const afterBadCount = totalActions.putBug + totalActions.putWeed;
+                if (afterBadCount > beforeBadCount) {
+                    await sleep(200);
+                    const afterExp = toNum((getUserState() || {}).exp);
+                    if (afterExp <= beforeExp) {
+                        log('好友', `放虫放草经验未增长，立即停止后续处理。已处理 ${processedCount} 个好友`, { module: 'friend', event: '放虫放草经验停止', processedCount, beforeExp, afterExp });
+                        break;
+                    }
+                }
             } catch (e) {
                 if (e.code === 'LIMIT_REACHED' || (e.message && e.message.includes('LIMIT_REACHED'))) {
                     log('好友', `放虫放草次数已达上限，停止后续处理。已处理 ${processedCount} 个好友`, { module: 'friend', event: '放虫放草次数上限停止', processedCount });
@@ -2173,7 +2136,7 @@ async function syncStakeoutTasks() {
 
     try {
         const friendsReply = await getAllFriends();
-        const friends = friendsReply.game_friends || [];
+        const friends = friendsReply.game_friends || friendsReply.friends || [];
         if (friends.length === 0) return;
 
         const blacklist = new Set(getFriendBlacklist());
@@ -2312,20 +2275,33 @@ async function addManualFriend(gid) {
             return { ok: false, error: '检测到哈哈南瓜，已自动移除并加入导入黑名单' };
         }
         if (enterReply && enterReply.lands && enterReply.lands.length > 0) {
+            const profileFriends = await fetchFriendProfilesByGids([gid]);
+            let profileName = '';
+            let profileAvatarUrl = '';
+            if (Array.isArray(profileFriends) && profileFriends[0]) {
+                const pf = profileFriends[0];
+                profileName = String(pf.remark || pf.name || '').trim();
+                profileAvatarUrl = String(pf.avatar_url || '').trim();
+            }
             const existingIndex = visitors.findIndex(v => v.gid === gid);
             if (existingIndex === -1) {
                 const updatedVisitors = [...visitors, {
                     gid,
-                    name: `GID:${gid}`,
-                    avatarUrl: '',
+                    name: profileName || `GID:${gid}`,
+                    avatarUrl: profileAvatarUrl || '',
                     lastSeen: Date.now(),
                 }];
                 setVisitors(state.accountId, updatedVisitors);
                 visitors = updatedVisitors;
             } else {
                 const updatedVisitors = [...visitors];
+                const current = updatedVisitors[existingIndex] || {};
+                const currentName = String(current.name || '').trim();
+                const shouldOverrideName = !currentName || /^GID:\d+$/i.test(currentName);
                 updatedVisitors[existingIndex] = {
-                    ...updatedVisitors[existingIndex],
+                    ...current,
+                    name: (profileName && shouldOverrideName) ? profileName : currentName,
+                    avatarUrl: profileAvatarUrl || String(current.avatarUrl || ''),
                     lastSeen: Date.now(),
                 };
                 setVisitors(state.accountId, updatedVisitors);
@@ -2367,7 +2343,7 @@ async function addManualFriend(gid) {
 // 批量添加好友（不验证，直接添加）
 async function addManualFriends(gids) {
     const state = getUserState();
-    return upsertVisitorsByGids(state.accountId, gids);
+    return await upsertVisitorsByGids(state.accountId, gids);
 }
 
 module.exports = {

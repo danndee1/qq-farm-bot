@@ -9,8 +9,10 @@ export interface Account {
   id: string
   name: string
   nick?: string
-  uin?: number
+  uin?: number | string
   platform?: string
+  avatar?: string
+  avatarUrl?: string
   running?: boolean
   // Add other fields as discovered
 }

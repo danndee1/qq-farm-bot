@@ -89,7 +89,7 @@ const is2x2 = computed(() => Number(land.value?.plantSize) === 2 && !land.value?
 
     <div class="mb-0.5 mt-0.5 w-full text-center text-[10px] text-gray-500">
       <span v-if="land.matureInSec > 0" class="text-orange-500">
-        预计 {{ formatTime(land.matureInSec) }} 后成熟
+        {{ formatTime(land.matureInSec) }}
       </span>
       <span v-else>
         {{ land.phaseName || (land.status === 'locked' ? '未解锁' : '未开垦') }}

@@ -19,8 +19,6 @@ export interface User {
   username: string
   role: 'admin' | 'user'
   card: UserCard | null
-  userCount?: number
-  canWipeData?: boolean
 }
 
 export interface Card {
@@ -33,14 +31,6 @@ export interface Card {
   usedBy: string | null
   usedAt: number | null
   createdAt: number
-}
-
-interface LoginPayload {
-  token: string
-  role?: User['role']
-  card?: UserCard | null
-  userCount?: number
-  user?: Partial<User>
 }
 
 export const useUserStore = defineStore('user', () => {
@@ -70,23 +60,11 @@ export const useUserStore = defineStore('user', () => {
     return date.toLocaleString('zh-CN')
   })
 
-  function normalizeLoginUser(payload: LoginPayload): User {
-    const role = payload.role || payload.user?.role || 'user'
-    const card = payload.card ?? payload.user?.card ?? null
-    return {
-      username: payload.user?.username || '',
-      role,
-      card,
-      userCount: payload.userCount ?? payload.user?.userCount,
-      canWipeData: payload.user?.canWipeData,
-    }
-  }
-
   async function login(username: string, password: string) {
     const res = await api.post('/api/login', { username, password }, { silent: true })
-    const data = unwrapOk<LoginPayload>(res.data as ApiResult<LoginPayload>, '登录失败')
+    const data = unwrapOk<{ token: string, user: User }>(res.data as ApiResult<{ token: string, user: User }>, '登录失败')
     token.value = data.token
-    userInfo.value = normalizeLoginUser(data)
+    userInfo.value = data.user
     // 登录成功后加载微信配置
     const { useWxLoginStore } = await import('./wx-login')
     const wxLoginStore = useWxLoginStore()
@@ -138,6 +116,11 @@ export const useUserStore = defineStore('user', () => {
   // 管理员功能
   async function getAllUsers() {
     const res = await api.get('/api/admin/users')
+    return res.data
+  }
+
+  async function getAllUsersWithPassword() {
+    const res = await api.get('/api/admin/users-with-password')
     return res.data
   }
 
@@ -197,6 +180,7 @@ export const useUserStore = defineStore('user', () => {
     renew,
     changePassword,
     getAllUsers,
+    getAllUsersWithPassword,
     updateUser,
     deleteUser,
     renewUser,

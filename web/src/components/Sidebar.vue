@@ -94,6 +94,30 @@ onBeforeUnmount(() => {
 
 const platform = computed(() => getPlatformLabel(currentAccount.value?.platform))
 
+const isAccountOpsDisabled = computed(() => !userStore.isAdmin && userStore.isExpired)
+const quotaLimit = computed(() => {
+  const quota = userStore.userCard?.quota
+  if (quota === undefined || quota === null)
+    return 3
+  return quota
+})
+const isOverQuota = computed(() => {
+  if (userStore.isAdmin)
+    return false
+  const limit = quotaLimit.value
+  if (limit === -1)
+    return false
+  return accounts.value.length >= limit
+})
+const isAddAccountDisabled = computed(() => isAccountOpsDisabled.value || isOverQuota.value)
+const addAccountDisabledReason = computed(() => {
+  if (isAccountOpsDisabled.value)
+    return '账号已到期，无法添加账号'
+  if (isOverQuota.value)
+    return '已超过配额，无法添加账号'
+  return ''
+})
+
 useIntervalFn(checkConnection, 30000)
 useIntervalFn(() => {
   refreshStatusFallback()
@@ -161,6 +185,26 @@ const displayName = computed(() => {
   return acc.uin
 })
 
+function getAccountAvatar(acc: any) {
+  if (!acc)
+    return ''
+  if (acc.uin)
+    return `https://q1.qlogo.cn/g?b=qq&nk=${acc.uin}&s=100`
+  return String(acc.avatar || acc.avatarUrl || '').trim()
+}
+
+function getAccountMeta(acc: any) {
+  const uin = String(acc?.uin || acc?.qq || '').trim()
+  if (uin)
+    return uin
+
+  const gid = String(acc?.gid || '').trim()
+  if (gid)
+    return `GID:${gid}`
+
+  return String(acc?.id || '未选择')
+}
+
 const connectionStatus = computed(() => {
   if (!systemConnected.value) {
     return {
@@ -221,10 +265,27 @@ async function handleLogout() {
   router.push('/login')
 }
 
-function getDaysLabel(days: number) {
+function getDurationLabel(card: any | null | undefined) {
+  if (!card)
+    return '-'
+
+  const days = card.days
   if (days === -1)
     return '永久'
-  return `${days}天`
+
+  if (typeof days === 'number' && Number.isFinite(days) && days > 0)
+    return `${days}天`
+
+  const expiresAt = card.expiresAt
+  if (!expiresAt || typeof expiresAt !== 'number')
+    return '-'
+
+  const diff = expiresAt - Date.now()
+  if (diff <= 0)
+    return '已过期'
+
+  const remainingDays = Math.ceil(diff / 86400000)
+  return `${remainingDays}天`
 }
 
 function getQuotaLabel(quota: number | undefined) {
@@ -326,7 +387,7 @@ async function handleRenew() {
             <div v-if="userStore.userCard && !userStore.isAdmin" class="mt-2 space-y-1">
               <div class="flex items-center justify-between text-xs">
                 <span class="text-gray-500">时长:</span>
-                <span :style="{ color: 'var(--theme-primary)' }">{{ getDaysLabel(userStore.userCard.days) }}</span>
+                <span :style="{ color: 'var(--theme-primary)' }">{{ getDurationLabel(userStore.userCard) }}</span>
               </div>
               <div class="flex items-center justify-between text-xs">
                 <span class="text-gray-500">配额:</span>
@@ -373,8 +434,8 @@ async function handleRenew() {
           <div class="flex items-center gap-3 overflow-hidden">
             <div class="h-8 w-8 flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-gray-200 ring-2 ring-white dark:bg-gray-600 dark:ring-gray-700">
               <img
-                v-if="currentAccount?.uin"
-                :src="`https://q1.qlogo.cn/g?b=qq&nk=${currentAccount.uin}&s=100`"
+                v-if="getAccountAvatar(currentAccount)"
+                :src="getAccountAvatar(currentAccount)"
                 class="h-full w-full object-cover"
                 @error="(e) => (e.target as HTMLImageElement).style.display = 'none'"
               >
@@ -393,7 +454,7 @@ async function handleRenew() {
                   {{ platform }}
                 </span>
                 <span class="truncate text-xs text-gray-400">
-                  {{ currentAccount?.uin || currentAccount?.id || '未选择' }}
+                  {{ getAccountMeta(currentAccount) }}
                 </span>
               </div>
             </div>
@@ -421,8 +482,8 @@ async function handleRenew() {
               >
                 <div class="h-6 w-6 flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-gray-200 dark:bg-gray-600">
                   <img
-                    v-if="acc.uin"
-                    :src="`https://q1.qlogo.cn/g?b=qq&nk=${acc.uin}&s=100`"
+                    v-if="getAccountAvatar(acc)"
+                    :src="getAccountAvatar(acc)"
                     class="h-full w-full object-cover"
                     @error="(e) => (e.target as HTMLImageElement).style.display = 'none'"
                   >
@@ -430,7 +491,7 @@ async function handleRenew() {
                 </div>
                 <div class="min-w-0 flex flex-1 flex-col items-start">
                   <span class="w-full truncate text-left text-sm font-medium">
-                    {{ acc.nick && acc.name ? `${acc.nick} (${acc.name})` : acc.name || acc.nick || acc.uin }}
+                    {{ acc.nick && acc.name ? `${acc.nick} (${acc.name})` : acc.name || acc.nick || getAccountMeta(acc) }}
                   </span>
                   <div class="flex items-center gap-1.5">
                     <span
@@ -440,7 +501,7 @@ async function handleRenew() {
                     >
                       {{ getPlatformLabel(acc.platform) }}
                     </span>
-                    <span class="text-xs text-gray-400">{{ acc.uin || acc.id }}</span>
+                    <span class="text-xs text-gray-400">{{ getAccountMeta(acc) }}</span>
                   </div>
                 </div>
                 <div class="flex items-center gap-1">
@@ -463,7 +524,10 @@ async function handleRenew() {
             <button
               class="w-full flex items-center gap-2 px-4 py-2 text-sm transition-colors hover:bg-gray-100/50 dark:hover:bg-gray-700/50"
               :style="{ color: 'var(--theme-primary)' }"
-              @click="showAccountModal = true; showAccountDropdown = false"
+              :disabled="isAddAccountDisabled"
+              :title="addAccountDisabledReason"
+              :class="isAddAccountDisabled ? 'cursor-not-allowed opacity-60' : ''"
+              @click="!isAddAccountDisabled && (showAccountModal = true); showAccountDropdown = false"
             >
               <div class="i-carbon-add" />
               <span>添加账号</span>

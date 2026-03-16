@@ -1007,25 +1007,25 @@ async function handleAddManualHex() {
 </script>
 
 <template>
-  <div class="h-full flex flex-col p-2.5 sm:p-4">
-    <div class="mb-3.5 flex gap-2 overflow-x-auto pb-1 sm:mb-4">
+  <div class="space-y-4">
+    <div class="flex gap-2 overflow-x-auto border-b border-gray-200 dark:border-gray-700">
       <button
-        class="h-10 shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors sm:px-4"
+        class="h-10 shrink-0 border-b-2 px-3 py-2 text-sm font-medium transition-colors sm:px-4"
         :class="activeSidebarTab === 'friends'
-          ? 'bg-blue-500 text-white shadow-md'
-          : 'bg-white text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'"
+          ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+          : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
         @click="activeSidebarTab = 'friends'"
       >
         <div class="flex items-center space-x-2">
           <div class="i-carbon-user-multiple h-6 w-6 flex items-center justify-center text-lg" />
-          <span>好友列表</span>
+          <span>好友</span>
         </div>
       </button>
       <button
-        class="h-10 shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors sm:px-4"
+        class="h-10 shrink-0 border-b-2 px-3 py-2 text-sm font-medium transition-colors sm:px-4"
         :class="activeSidebarTab === 'blacklist'
-          ? 'bg-blue-500 text-white shadow-md'
-          : 'bg-white text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'"
+          ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+          : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
         @click="activeSidebarTab = 'blacklist'"
       >
         <div class="flex items-center space-x-2">
@@ -1037,25 +1037,25 @@ async function handleAddManualHex() {
         </div>
       </button>
       <button
-        class="h-10 shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors sm:px-4"
+        class="h-10 shrink-0 border-b-2 px-3 py-2 text-sm font-medium transition-colors sm:px-4"
         :class="activeSidebarTab === 'visitors'
-          ? 'bg-blue-500 text-white shadow-md'
-          : 'bg-white text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'"
+          ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+          : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
         @click="activeSidebarTab = 'visitors'"
       >
         <div class="flex items-center space-x-2">
           <div class="i-carbon-view h-6 w-6 flex items-center justify-center text-lg" />
-          <span>最近访客</span>
+          <span>访客</span>
           <span v-if="interactRecords.length" class="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
             {{ interactRecords.length }}
           </span>
         </div>
       </button>
       <button
-        class="h-10 shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors sm:px-4"
+        class="h-10 shrink-0 border-b-2 px-3 py-2 text-sm font-medium transition-colors sm:px-4"
         :class="activeSidebarTab === 'importBlacklist'
-          ? 'bg-blue-500 text-white shadow-md'
-          : 'bg-white text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'"
+          ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+          : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
         @click="activeSidebarTab = 'importBlacklist'"
       >
         <div class="flex items-center space-x-2">
@@ -1068,7 +1068,7 @@ async function handleAddManualHex() {
       </button>
     </div>
 
-    <div class="flex-1 overflow-y-auto">
+    <div>
       <!-- 好友列表 -->
       <div v-if="activeSidebarTab === 'friends'">
         <div class="mb-4 flex flex-col gap-3 sm:mb-6 sm:flex-row sm:items-center sm:justify-between">
