@@ -618,53 +618,53 @@ async function handleTestOffline() {
 
     <div v-else class="space-y-4">
       <!-- 标签页导航 -->
-      <div class="flex gap-2 overflow-x-auto border-b border-gray-200 dark:border-gray-700">
+      <div class="flex flex-wrap border-b border-gray-200 dark:border-gray-700">
         <button
-          class="shrink-0 border-b-2 px-4 py-2 text-sm font-medium transition-colors"
+          class="flex-1 border-b-2 px-2 py-2.5 text-sm font-medium transition-colors"
           :class="activeTab === 'account'
             ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
             : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
           @click="activeTab = 'account'"
         >
-          <div class="flex items-center space-x-2">
-            <div class="i-carbon-user-multiple text-lg" />
-            <span>账号</span>
+          <div class="flex flex-col items-center justify-center space-y-1 sm:flex-row sm:space-x-2 sm:space-y-0">
+            <div class="i-carbon-user-multiple text-xl" />
+            <span class="whitespace-normal text-center">账号</span>
           </div>
         </button>
         <button
-          class="shrink-0 border-b-2 px-4 py-2 text-sm font-medium transition-colors"
+          class="flex-1 border-b-2 px-2 py-2.5 text-sm font-medium transition-colors"
           :class="activeTab === 'user'
             ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
             : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
           @click="activeTab = 'user'"
         >
-          <div class="flex items-center space-x-2">
-            <div class="i-carbon-user text-lg" />
-            <span>本用户</span>
+          <div class="flex flex-col items-center justify-center space-y-1 sm:flex-row sm:space-x-2 sm:space-y-0">
+            <div class="i-carbon-user text-xl" />
+            <span class="whitespace-normal text-center">本用户</span>
           </div>
         </button>
         <button
-          class="shrink-0 border-b-2 px-4 py-2 text-sm font-medium transition-colors"
+          class="flex-1 border-b-2 px-2 py-2.5 text-sm font-medium transition-colors"
           :class="activeTab === 'strategy'
             ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
             : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
           @click="activeTab = 'strategy'"
         >
-          <div class="flex items-center space-x-2">
-            <div class="i-fas-cogs text-lg" />
-            <span>策略设置</span>
+          <div class="flex flex-col items-center justify-center space-y-1 sm:flex-row sm:space-x-2 sm:space-y-0">
+            <div class="i-fas-cogs text-xl" />
+            <span class="whitespace-normal text-center">策略</span>
           </div>
         </button>
         <button
-          class="shrink-0 border-b-2 px-4 py-2 text-sm font-medium transition-colors"
+          class="flex-1 border-b-2 px-2 py-2.5 text-sm font-medium transition-colors"
           :class="activeTab === 'automation'
             ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
             : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'"
           @click="activeTab = 'automation'"
         >
-          <div class="flex items-center space-x-2">
-            <div class="i-fas-toggle-on text-lg" />
-            <span>自动控制</span>
+          <div class="flex flex-col items-center justify-center space-y-1 sm:flex-row sm:space-x-2 sm:space-y-0">
+            <div class="i-fas-toggle-on text-xl" />
+            <span class="whitespace-normal text-center">控制</span>
           </div>
         </button>
       </div>
@@ -1139,7 +1139,7 @@ async function handleTestOffline() {
               </h4>
               <div class="flex flex-wrap items-center gap-4 rounded bg-green-50 p-3 dark:bg-green-900/20">
                 <BaseSwitch v-model="localSettings.automation.fast_harvest" label="启用秒收取" />
-                <span class="text-xs text-gray-500 dark:text-gray-400">作物成熟前提前发起收获请求，减少被偷概率</span>
+                <span class="text-xs text-gray-500 dark:text-gray-400">作物成熟前提前发起收获请求，具备自动重试机制</span>
               </div>
               <div v-if="localSettings.automation.fast_harvest" class="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <BaseInput
@@ -1163,7 +1163,7 @@ async function handleTestOffline() {
               </h4>
               <div class="flex flex-wrap items-center gap-4 rounded bg-purple-50 p-3 dark:bg-purple-900/20">
                 <BaseSwitch v-model="localSettings.automation.stakeout_steal" label="启用蹲守偷菜" />
-                <span class="text-xs text-gray-500 dark:text-gray-400">预判好友作物成熟时间，提前蹲点等待偷取</span>
+                <span class="text-xs text-gray-500 dark:text-gray-400">预判成熟时间并自动分组，支持提前蹲点、延迟重试及自动出售</span>
               </div>
               <div v-if="localSettings.automation.stakeout_steal" class="grid grid-cols-1 gap-3 md:grid-cols-3">
                 <BaseInput

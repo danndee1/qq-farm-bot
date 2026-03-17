@@ -548,10 +548,24 @@ function startAdminServer(dataProvider) {
         const id = String(accountId || '').trim();
         if (!id) return {};
         const automation = store.getAutomation ? store.getAutomation(id) : {};
+        const plantingStrategy = store.getPlantingStrategy ? store.getPlantingStrategy(id) : 'preferred';
+        const preferredSeedId = store.getPreferredSeed ? store.getPreferredSeed(id) : 0;
+        const intervals = store.getIntervals ? store.getIntervals(id) : {};
+        const friendQuietHours = store.getFriendQuietHours ? store.getFriendQuietHours(id) : { enabled: false, start: '23:00', end: '07:00' };
+        const stealDelaySeconds = store.getStealDelaySeconds ? store.getStealDelaySeconds(id) : 0;
+        const plantOrderRandom = store.getPlantOrderRandom ? store.getPlantOrderRandom(id) : false;
+        const plantDelaySeconds = store.getPlantDelaySeconds ? store.getPlantDelaySeconds(id) : 0;
         const fastHarvestConfig = (typeof store.getFastHarvestConfig === 'function') ? store.getFastHarvestConfig(id) : { advanceMs: 200 };
         const stakeoutStealConfig = (typeof store.getStakeoutStealConfig === 'function') ? store.getStakeoutStealConfig(id) : { enabled: false, delaySec: 3, maxAheadSec: 4 * 3600, friendList: [] };
         return {
             automation,
+            plantingStrategy,
+            preferredSeedId,
+            intervals,
+            friendQuietHours,
+            stealDelaySeconds,
+            plantOrderRandom,
+            plantDelaySeconds,
             fastHarvestAdvanceMs: fastHarvestConfig.advanceMs,
             stakeoutSteal: {
                 enabled: !!stakeoutStealConfig.enabled,
@@ -1310,6 +1324,13 @@ function startAdminServer(dataProvider) {
             if (syncCfg.enabled && currentUser) {
                 const body = (req.body && typeof req.body === 'object') ? req.body : {};
                 const syncPayload = {};
+                if (body.plantingStrategy !== undefined) syncPayload.plantingStrategy = body.plantingStrategy;
+                if (body.preferredSeedId !== undefined) syncPayload.preferredSeedId = body.preferredSeedId;
+                if (body.intervals !== undefined) syncPayload.intervals = body.intervals;
+                if (body.friendQuietHours !== undefined) syncPayload.friendQuietHours = body.friendQuietHours;
+                if (body.stealDelaySeconds !== undefined) syncPayload.stealDelaySeconds = body.stealDelaySeconds;
+                if (body.plantOrderRandom !== undefined) syncPayload.plantOrderRandom = body.plantOrderRandom;
+                if (body.plantDelaySeconds !== undefined) syncPayload.plantDelaySeconds = body.plantDelaySeconds;
                 if (body.fastHarvestAdvanceMs !== undefined) syncPayload.fastHarvestAdvanceMs = body.fastHarvestAdvanceMs;
                 if (body.stakeoutSteal !== undefined) syncPayload.stakeoutSteal = body.stakeoutSteal;
                 if (body.stakeoutFriendList !== undefined) syncPayload.stakeoutFriendList = body.stakeoutFriendList;
@@ -2149,34 +2170,63 @@ function startAdminServer(dataProvider) {
         try {
             const body = (req.body && typeof req.body === 'object') ? req.body : {};
             const currentUser = req.currentUser;
-            const isUpdate = !!body.id;
+            let isUpdate = !!body.id;
 
-            // 检查权限：普通用户只能更新自己的账号
-            if (isUpdate && currentUser && currentUser.role !== 'admin') {
-                if (!checkAccountAccess(req, resolveAccId(body.id))) {
-                    return res.status(403).json({ ok: false, error: '无权访问此账号' });
+            const resolvedUpdateId = isUpdate ? resolveAccId(body.id) : '';
+            const payload = isUpdate
+                ? { ...body, id: resolvedUpdateId || String(body.id) }
+                : { ...body };
+
+            const incomingCode = String(payload.code || '').trim();
+            const manualPlatform = String(payload.platform || 'qq').trim().toLowerCase();
+
+            let basicProfile = null;
+            if (incomingCode && manualPlatform === 'qq') {
+                try {
+                    basicProfile = await fetchProfileByCode(incomingCode, {
+                        platform: manualPlatform,
+                    });
+                    if (basicProfile && basicProfile.avatar) {
+                        payload.avatar = basicProfile.avatar;
+                        payload.avatarUrl = basicProfile.avatar;
+                    }
+                    if (basicProfile && basicProfile.gid > 0 && !String(payload.gid || '').trim()) {
+                        payload.gid = String(basicProfile.gid);
+                    }
+                    if (basicProfile && basicProfile.openId && !String(payload.openId || '').trim()) {
+                        payload.openId = basicProfile.openId;
+                    }
+                    if (basicProfile && basicProfile.name) {
+                        payload.nick = basicProfile.name;
+                    }
+                } catch (error) {
+                    adminLogger.warn('fetch manual account profile failed', {
+                        error: error.message,
+                        accountId: payload.id || '',
+                    });
                 }
             }
 
-            const resolvedUpdateId = isUpdate ? resolveAccId(body.id) : '';
-            const payload = isUpdate ? { ...body, id: resolvedUpdateId || String(body.id) } : body;
-            let wasRunning = false;
-            if (isUpdate && provider.isAccountRunning) {
-                wasRunning = provider.isAccountRunning(payload.id);
+            // 新增账号时：如果 code 可解析到 gid，且该用户已有同 gid 账号，则改为仅更新该账号的 code（不新增）
+            if (!isUpdate && currentUser && manualPlatform === 'qq') {
+                const profileGid = Number.parseInt(String((basicProfile && basicProfile.gid) || payload.gid || ''), 10) || 0;
+                if (profileGid > 0) {
+                    const existing = getAccountList(currentUser.username).find((a) => {
+                        const agid = Number.parseInt(String(a && a.gid || ''), 10) || 0;
+                        const platform = String((a && a.platform) || 'qq').trim().toLowerCase();
+                        return platform === 'qq' && agid === profileGid;
+                    });
+                    if (existing && existing.id) {
+                        isUpdate = true;
+                        payload.id = String(existing.id);
+                    }
+                }
             }
 
-            // 检查是否仅修改了备注信息
-            let onlyRemarkChanged = false;
-            if (isUpdate) {
-                const oldAccounts = provider.getAccounts();
-                const oldAccount = oldAccounts.accounts.find(a => a.id === payload.id);
-                if (oldAccount) {
-                    // 检查 payload 中是否只包含 id 和 name 字段
-                    const payloadKeys = Object.keys(payload);
-                    const onlyIdAndName = payloadKeys.length === 2 && payloadKeys.includes('id') && payloadKeys.includes('name');
-                    if (onlyIdAndName) {
-                        onlyRemarkChanged = true;
-                    }
+            // 检查权限：普通用户只能更新自己的账号
+            if (isUpdate && currentUser && currentUser.role !== 'admin') {
+                if (!checkAccountAccess(req, resolveAccId(payload.id))) {
+                    return res.status(403).json({ ok: false, error: '无权访问此账号' });
                 }
             }
 
@@ -2194,35 +2244,23 @@ function startAdminServer(dataProvider) {
                 payload.username = currentUser.username;
             }
 
-            const incomingCode = String(payload.code || '').trim();
-            const manualPlatform = String(payload.platform || 'qq').trim().toLowerCase();
-            if (incomingCode && manualPlatform === 'qq') {
-                try {
-                    const basicProfile = await fetchProfileByCode(incomingCode, {
-                        platform: manualPlatform,
-                    });
-                    if (basicProfile.avatar) {
-                        payload.avatar = basicProfile.avatar;
-                        payload.avatarUrl = basicProfile.avatar;
+            let wasRunning = false;
+            if (isUpdate && provider.isAccountRunning) {
+                wasRunning = provider.isAccountRunning(payload.id);
+            }
+
+            // 检查是否仅修改了备注信息
+            let onlyRemarkChanged = false;
+            if (isUpdate) {
+                const oldAccounts = provider.getAccounts();
+                const oldAccount = oldAccounts.accounts.find(a => a.id === payload.id);
+                if (oldAccount) {
+                    // 检查 payload 中是否只包含 id 和 name 字段
+                    const payloadKeys = Object.keys(payload);
+                    const onlyIdAndName = payloadKeys.length === 2 && payloadKeys.includes('id') && payloadKeys.includes('name');
+                    if (onlyIdAndName) {
+                        onlyRemarkChanged = true;
                     }
-                    if (basicProfile.gid > 0 && !String(payload.gid || '').trim()) {
-                        payload.gid = String(basicProfile.gid);
-                    }
-                    if (basicProfile.openId && !String(payload.openId || '').trim()) {
-                        payload.openId = basicProfile.openId;
-                    }
-                    if (basicProfile.name) {
-                        payload.nick = basicProfile.name;
-                    }
-                    const incomingName = String(payload.name || '').trim();
-                    if (!incomingName && basicProfile.name) {
-                        payload.name = basicProfile.name;
-                    }
-                } catch (error) {
-                    adminLogger.warn('fetch manual account profile failed', {
-                        error: error.message,
-                        accountId: payload.id || '',
-                    });
                 }
             }
 
